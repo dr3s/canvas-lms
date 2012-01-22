@@ -13,7 +13,6 @@ db/*.sqlite3-journal
 db/*.sqlite
 db/demo
 config/GEM_HOME
-config/*.yml
 config/environments/*-local.rb
 models.dot
 db/*sql
