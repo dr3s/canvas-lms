@@ -1,0 +1,7 @@
+--- 
+production: 
+  encryption_key: 3ae7a72cc354e0e4d6327ece76ad59293948f07596d0fdb3e7989852e4920381bdfd64819f806b2f478135536f7f6ccf92d00ed50b6fc422471b721f4272336b
+test: 
+  encryption_key: 12345
+development: 
+  encryption_key: 12345
