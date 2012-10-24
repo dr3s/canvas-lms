@@ -7,26 +7,30 @@ module BasicLTI::BasicOutcomes
   # the pre-determined shared secret that the tool signs requests with, this
   # ensures that only this launch of the tool can modify the score.
   def self.encode_source_id(tool, course, assignment, user)
-    payload = [tool.id, course.id, assignment.id, user.id].join('-')
-    "#{payload}-#{Canvas::Security.hmac_sha1(payload)}"
+    tool.shard.activate do
+      payload = [tool.id, course.id, assignment.id, user.id].join('-')
+      "#{payload}-#{Canvas::Security.hmac_sha1(payload, tool.shard.settings[:encryption_key])}"
+    end
   end
 
   SOURCE_ID_REGEX = %r{^(\d+)-(\d+)-(\d+)-(\d+)-(\w+)$}
 
-  def self.decode_source_id(sourceid)
-    md = sourceid.match(SOURCE_ID_REGEX)
-    return false unless md
-    new_encoding = [md[1], md[2], md[3], md[4]].join('-')
-    return false unless Canvas::Security.hmac_sha1(new_encoding) == md[5]
-    tool = ContextExternalTool.find(md[1])
-    course = Course.find(md[2])
-    assignment = course.assignments.active.find(md[3])
-    user = course.students.active.find(md[4])
-    tag = assignment.external_tool_tag
-    if !tag || tool != ContextExternalTool.find_external_tool(tag.url, course)
-      return false # assignment settings have changed, this tool is no longer active
+  def self.decode_source_id(tool, sourceid)
+    tool.shard.activate do
+      md = sourceid.match(SOURCE_ID_REGEX)
+      return false unless md
+      new_encoding = [md[1], md[2], md[3], md[4]].join('-')
+      return false unless Canvas::Security.hmac_sha1(new_encoding, tool.shard.settings[:encryption_key]) == md[5]
+      return false unless tool.id == md[1].to_i
+      course = Course.find(md[2])
+      assignment = course.assignments.active.find(md[3])
+      user = course.student_enrollments.active.find_by_user_id(md[4]).user
+      tag = assignment.external_tool_tag
+      if !tag || tool != ContextExternalTool.find_external_tool(tag.url, course)
+        return false # assignment settings have changed, this tool is no longer active
+      end
+      return course, assignment, user
     end
-    return course, assignment, user
   end
 
   def self.process_request(tool, xml)
@@ -73,6 +77,14 @@ module BasicLTI::BasicOutcomes
       @lti_request.at_css('imsx_POXBody > replaceResultRequest > resultRecord > result > resultScore > textString').try(:content)
     end
 
+    def result_data_text
+      @lti_request && @lti_request.at_css('imsx_POXBody > replaceResultRequest > resultRecord > result > resultData > text').try(:content)
+    end
+
+    def result_data_url
+      @lti_request && @lti_request.at_css('imsx_POXBody > replaceResultRequest > resultRecord > result > resultData > url').try(:content)
+    end
+
     def to_xml
       xml = LtiResponse.envelope.dup
       xml.at_css('imsx_POXHeader imsx_statusInfo imsx_codeMajor').content = code_major
@@ -114,7 +126,7 @@ module BasicLTI::BasicOutcomes
       # tuple of (course, assignment, user) to ensure that only this launch of
       # the tool is attempting to modify this data.
       source_id = self.sourcedid
-      course, assignment, user = BasicLTI::BasicOutcomes.decode_source_id(source_id) if source_id
+      course, assignment, user = BasicLTI::BasicOutcomes.decode_source_id(tool, source_id) if source_id
 
       unless course && assignment && user
         return false
@@ -132,16 +144,40 @@ module BasicLTI::BasicOutcomes
 
     def handle_replaceResult(tool, course, assignment, user)
       text_value = self.result_score
-      new_value = Float(text_value) rescue false
-      if new_value && (0.0 .. 1.0).include?(new_value)
-        submission_hash = { :grade => "#{new_value * 100}%" }
+      new_score = Float(text_value) rescue false
+      error_message = nil
+      submission_hash = { :submission_type => 'external_tool' }
+
+      if text = result_data_text
+        submission_hash[:body] = text
+        submission_hash[:submission_type] = 'online_text_entry'
+      elsif url = result_data_url
+        submission_hash[:url] = url
+        submission_hash[:submission_type] = 'online_url'
+      end
+
+      if new_score
+        if (0.0 .. 1.0).include?(new_score)
+          submission_hash[:grade] = "#{new_score * 100}%"
+        else
+          error_message = I18n.t('lib.basic_lti.bad_score', "Score is not between 0 and 1")
+        end
+      elsif !text && !url
+          error_message = I18n.t('lib.basic_lti.no_score', "No score given")
+      end
+
+      if error_message
+        self.code_major = 'failure'
+        self.description = error_message
+      else
+        if submission_hash[:submission_type] != 'external_tool'
+          assignment.submit_homework(user, submission_hash.clone)
+        end
         @submission = assignment.grade_student(user, submission_hash).first
         self.body = "<replaceResultResponse />"
-        return true
-      else
-        self.code_major = 'failure'
-        return true
       end
+
+      true
     end
 
     def handle_deleteResult(tool, course, assignment, user)

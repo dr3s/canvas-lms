@@ -21,6 +21,11 @@ class GroupCategory < ActiveRecord::Base
   belongs_to :context, :polymorphic => true
   has_many :groups, :dependent => :destroy
   has_many :assignments, :dependent => :nullify
+  validates_length_of :name, :maximum => maximum_string_length, :allow_nil => true, :allow_blank => true
+
+  named_scope :active, lambda {
+    { :conditions => ['group_categories.deleted_at is null'] }
+  }
 
   named_scope :other_than, lambda{ |cat|
     { :conditions => ['group_categories.id != ?', cat.id || 0] }
@@ -39,18 +44,23 @@ class GroupCategory < ActiveRecord::Base
       role_category_for_context('imported', context)
     end
 
+    def communities_for(context)
+      role_category_for_context('communities', context)
+    end
+
     protected
     def name_for_role(role)
       case role
       when 'student_organized' then t('group_categories.student_organized', "Student Groups")
       when 'imported'          then t('group_categories.imported', "Imported Groups")
+      when 'communities'       then t('group_categories.communities', "Communities")
       end
     end
 
     def protected_roles_for_context(context)
       case context
       when Course  then ['student_organized', 'imported']
-      when Account then ['imported']
+      when Account then ['communities', 'imported']
       else              []
       end
     end
@@ -70,12 +80,24 @@ class GroupCategory < ActiveRecord::Base
     end
   end
 
+  def communities?
+    self.role == 'communities'
+  end
+
   def student_organized?
     self.role == 'student_organized'
   end
 
   def protected?
     self.role.present?
+  end
+
+  # Group categories generally restrict students to only be in one group per
+  # category, but we sort of cheat and implement student organized groups and
+  # communities as one big group category, and then relax that membership
+  # restriction.
+  def allows_multiple_memberships?
+    self.student_organized? || self.communities?
   end
 
   # this is preferred over setting self_signup directly. know that if you set
@@ -110,6 +132,10 @@ class GroupCategory < ActiveRecord::Base
     # circuit as a bonus.
     return false unless self.context && self.context.is_a?(Course)
     self.groups.any?{ |group| !group.has_common_section? }
+  end
+
+  def group_for(user)
+    groups.active.to_a.find{ |g| g.users.include?(user) }
   end
 
   alias_method :destroy!, :destroy

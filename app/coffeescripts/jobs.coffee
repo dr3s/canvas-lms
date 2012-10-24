@@ -1,13 +1,22 @@
-I18n.scoped 'jobs', (I18n) ->
+define [
+  'i18n!jobs'
+  'jquery'
+  'vendor/slickgrid'
+  'jquery.ajaxJSON'
+  'jqueryui/dialog'
+], (I18n, $, Slick) ->
+
   class FlavorGrid
     constructor: (@options, @type_name, @grid_name) ->
-      @data = @options.data
+      @data = []
       @$element = $(@grid_name)
-      @setTimer() if @options.refresh_rate
+      @setTimer()
       @query = ''
 
     setTimer: () =>
-      setTimeout (=> @refresh(@setTimer)), @options.refresh_rate
+      setTimeout @refresh, 0
+      if @options.refresh_rate
+        setTimeout (=> @refresh(@setTimer)), @options.refresh_rate
 
     refresh: (cb) =>
       @$element.queue () =>
@@ -17,9 +26,7 @@ I18n.scoped 'jobs', (I18n) ->
           @data.push item for item in data[@type_name]
           if data.total && data.total > @data.length
             @data.push({}) for i in [@data.length ... data.total]
-          @grid.removeAllRows()
-          @grid.updateRowCount()
-          @grid.render()
+          @grid.invalidate()
           cb?()
           @updated?()
           @$element.dequeue()
@@ -38,14 +45,29 @@ I18n.scoped 'jobs', (I18n) ->
       @grid = new Slick.Grid(@grid_name, @data, @columns, @grid_options())
       this
 
-  class Jobs extends FlavorGrid
+  class window.Jobs extends FlavorGrid
     constructor: (options, type_name = 'jobs', grid_name = '#jobs-grid') ->
       Jobs.max_attempts = options.max_attempts if options.max_attempts
       super(options, type_name, grid_name)
+      if options.starting_query
+        @query = options.starting_query
+      @show_search($('#jobs-flavor').val())
 
     search: (query) ->
       @query = query
       @refresh()
+
+    show_search: (flavor) =>
+      switch flavor
+        when "id", "strand", "tag"
+          $('#jobs-search').show()
+          $('#jobs-search').attr('placeholder', flavor)
+        else
+          $('#jobs-search').hide()
+
+    change_flavor: (flavor) =>
+      @show_search(flavor)
+      super(flavor)
 
     attempts_formatter: (r,c,d) =>
       return '' unless @data[r].id
@@ -70,9 +92,8 @@ I18n.scoped 'jobs', (I18n) ->
           return
         @loading[row] = true
         $.ajaxJSON @options.url, "GET", { flavor: @options.flavor, q: @query, offset: row }, (data) =>
-          @data[row ... row + data.jobs.length] = data.jobs
-          @grid.removeAllRows()
-          @grid.render()
+          @data[row ... row + data[@type_name].length] = data[@type_name]
+          @grid.invalidate()
           @$element.dequeue()
 
     id_formatter: (r,c,d) =>
@@ -119,22 +140,20 @@ I18n.scoped 'jobs', (I18n) ->
 
     init: () ->
       super()
-      @grid.onSelectedRowsChanged = () =>
+      @grid.setSelectionModel(new Slick.RowSelectionModel())
+      @grid.onSelectedRowsChanged.subscribe =>
         rows = @grid.getSelectedRows()
         row = if rows?.length == 1 then rows[0] else -1
         job = @data[rows[0]] || {}
         $('#show-job .show-field').each (idx, field) =>
           field_name = field.id.replace("job-", '')
           $(field).text(job[field_name] || '')
-        $('#job-id-link').attr('href', "/jobs?id=#{job.id}&flavor=#{@options.flavor}")
-      if @data.length == 1 && @type_name == 'jobs'
-        @grid.setSelectedRows [0]
-        @grid.onSelectedRowsChanged()
+        $('#job-id-link').attr('href', "/jobs?flavor=id&q=#{job.id}")
       this
 
     selectAll: () ->
       @grid.setSelectedRows([0...@data.length])
-      @grid.onSelectedRowsChanged()
+      @grid.onSelectedRowsChanged.notify()
 
     onSelected: (action) ->
       params =
@@ -146,10 +165,14 @@ I18n.scoped 'jobs', (I18n) ->
         alert('No jobs are selected')
         return
 
-      all_jobs = @grid.getSelectedRows().length == @data.length
+      all_jobs = @grid.getSelectedRows().length > 1 && @grid.getSelectedRows().length == @data.length
 
-      if all_jobs && action == 'destroy'
-        return unless confirm(I18n.t('confirm.delete_all', "Are you sure you want to delete *all* jobs of this type and matching this query?"))
+      if all_jobs
+        message = switch action
+          when 'hold' then I18n.t 'confirm.hold_all', "Are you sure you want to hold *all* jobs of this type and matching this query?"
+          when 'unhold' then I18n.t 'confirm.unhold_all', "Are you sure you want to unhold *all* jobs of this type and matching this query?"
+          when 'destroy' then I18n.t 'confirm.destroy_all', "Are you sure you want to destroy *all* jobs of this type and matching this query?"
+        return unless confirm(message)
 
       # special case -- if they've selected all, then don't send the ids so that
       # we can operate on jobs that match the query but haven't even been loaded
@@ -162,6 +185,9 @@ I18n.scoped 'jobs', (I18n) ->
 
     updated: () ->
       $('#jobs-total').text @data.length
+      if @data.length == 1 && @type_name == 'jobs'
+        @grid.setSelectedRows [0]
+        @grid.onSelectedRowsChanged.notify()
 
   class Workers extends Jobs
     constructor: (options) ->
@@ -239,3 +265,6 @@ I18n.scoped 'jobs', (I18n) ->
         height: 700
         modal: true
       false
+
+  { Jobs, Workers, Tags }
+

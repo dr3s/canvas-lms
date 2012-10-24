@@ -39,12 +39,12 @@ module MigratorHelper
       timestamp = timestamp.to_i/ 1000 rescue 0
       t = nil
       if timestamp > 0
-        t = Time.at(timestamp)
+        t = Time.at(timestamp).utc
         t = Time.utc(t.year, t.month, t.day, t.hour, t.min, t.sec)
       end
       t
     else
-      Time.parse(timestamp.to_s)
+      Time.use_zone("UTC"){Time.zone.parse(timestamp.to_s)}
     end
   end
 
@@ -89,6 +89,12 @@ module MigratorHelper
   def add_warning(user_message, exception_or_info='')
     if content_migration.respond_to?(:add_warning)
       content_migration.add_warning(user_message, exception_or_info)
+    end
+  end
+
+  def set_progress(progress)
+    if content_migration && content_migration.respond_to?(:fast_update_progress)
+      content_migration.fast_update_progress(progress)
     end
   end
   

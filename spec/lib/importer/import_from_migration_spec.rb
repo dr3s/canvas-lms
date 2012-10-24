@@ -47,6 +47,7 @@ describe Course do
       :assignments => {'1865116014002' => true, '1865116155002' => true, '4407365899221' => true, '4469882339231' => true},
       :outline_folders => {'1865116206002' => true, '1865116207002' => true},
       :quizzes => {'1865116175002' => true},
+      :all_groups => true,
       :shift_dates=>"1",
       :old_start_date=>"Jan 23, 2009",
       :old_end_date=>"Apr 10, 2009",
@@ -67,11 +68,7 @@ describe Course do
     topic = course.discussion_topics.find_by_migration_id("1865116155002")
     topic.should_not be_nil
     topic.assignment.should_not be_nil
-    topic.discussion_entries.length.should eql(1)
-    entry = topic.discussion_entries.find_by_migration_id("1865129749002")
-    entry.should_not be_nil
-    entry.message.should eql("Hello, my name is The Hamburgler.<br/><br/>-The, Yes \"The\" Hamburgler.")
-    
+
     # quizzes
     course.quizzes.length.should eql(1)
     quiz = course.quizzes.first

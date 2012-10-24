@@ -1,92 +1,179 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
+require File.expand_path(File.dirname(__FILE__) + '/helpers/discussion_announcement_specs')
 
-describe "announcements selenium tests" do
+describe "announcements" do
   it_should_behave_like "in-process server selenium tests"
 
-  it "should not show JSON when loading more announcements via pageless" do
-    course_with_student_logged_in
-    
-    50.times { @course.announcements.create!(:title => 'Hi there!', :message => 'Announcement time!') }
-    get "/courses/#{@course.id}/announcements"
-    
-    start = driver.find_elements(:css, "#topic_list .topic").length
-    driver.execute_script('window.scrollTo(0, 100000)')
-    keep_trying_until { driver.find_elements(:css, "#topic_list .topic").length > start }
-    
-    driver.find_element(:id, "topic_list").should_not include_text('discussion_topic')
-  end
-
-  it "should create an announcement" do
-    course_with_teacher_logged_in
-    get "/courses/#{@course.id}/announcements"
-
-    #start creating announcement  
-    driver.find_element(:css, '.add_topic_link').click
-    topic_title = driver.find_element(:css, '.add_topic_form_new input[name="discussion_topic[title]"]')
-    topic_title.clear
-    topic_title.send_keys "First Announcement"
-
-    first_text = 'Hi, this is my first announcement'
-    type_in_tiny('textarea.topic_content:first', first_text)
-    driver.find_element(:css, '.add_topic_form_new').submit
-    wait_for_ajaximations
-    announcement = driver.find_element(:css, '#topic_list .topic')
-    announcement.find_element(:link, "First Announcement").should be_displayed
-    announcement.find_element(:css, '.message').should include_text(first_text)
-  end
-
-  it "should have a teacher add a new entry to its own announcement" do
-    course_with_teacher_logged_in
+  def create_announcement(message = 'announcement message')
     @context = @course
-    announcement_model
-    get "/courses/#{@course.id}/announcements"
-
-    driver.find_element(:css, '.content .replies').click
-    driver.find_element(:css, '#content .add_entry_link').click
-    entry_text = 'new entry text'
-    type_in_tiny('textarea.entry_content:first', entry_text)
-    driver.find_element(:id, 'add_entry_form_entry_new').submit
-    wait_for_ajaximations
-    driver.find_element(:css, '#entry_list .discussion_entry .content').should include_text(entry_text)
-    driver.find_element(:css, '#left-side .announcements').click
-    driver.find_element(:css, '#topic_list .replies').should include_text('1')
+    @announcement = announcement_model(:title => 'new announcement', :message => message)
   end
 
+  def create_announcement_manual(css_checkbox)
+    expect_new_page_load { f('.btn-primary').click }
+    replace_content(f('input[name=title]'), "First Announcement")
 
-  it "should add an external feed to announcements" do
-    course_with_teacher_logged_in
-
-    get "/courses/#{@course.id}/announcements"
-
-    #add external feed to announcements
-    feed_name = 'http://www.google.com'
-    driver.find_element(:css, '.add_external_feed_link').click
-    feed_form = driver.find_element(:id, 'add_external_feed_form')
-    feed_form.find_element(:id, 'external_feed_url').send_keys(feed_name)
-    unless feed_form.find_element(:id, 'external_feed_header_match').displayed?
-      feed_form.find_element(:id, 'external_feed_add_header_match').click
+    type_in_tiny('textarea[name=message]', 'Hi, this is my first announcement')
+    if css_checkbox != nil
+      f(css_checkbox).click
     end
-    feed_form.find_element(:id, 'external_feed_header_match').send_keys('blah')
-    feed_form.submit
-    wait_for_ajaximations
-
-    #delete external feed
-    driver.find_element(:link, feed_name).should be_displayed
-    driver.find_element(:css, '#external_feeds li:nth-child(2) .delete_feed_link').click
-    confirm_dialog = driver.switch_to.alert
-    confirm_dialog.accept
-    wait_for_ajaximations
-    element_exists(:link, feed_name).should be_false
-    ExternalFeed.count.should eql(0)
-
-    #cancel while adding an external feed
-    driver.find_element(:css, '.add_external_feed_link').click
-    feed_form.find_element(:id, 'external_feed_url').send_keys('http://www.yahoo.com')
-    feed_form.find_element(:id, 'external_feed_header_match').send_keys('more blah')
-    feed_form.find_element(:css, '#add_external_feed_form .cancel_button').click
-    wait_for_animations
-    driver.find_element(:id,'add_external_feed_form').should_not be_displayed
-
   end
 
+  it "should validate replies are not visible until after users post" do
+    password = 'asdfasdf'
+    student_2_entry = 'reply from student 2'
+    topic_title = 'new replies hidden until post topic'
+
+    course
+    @course.offer
+    student = user_with_pseudonym({:unique_id => 'student@example.com', :password => password})
+    teacher = user_with_pseudonym({:unique_id => 'teacher@example.com', :password => password})
+    @course.enroll_user(student, 'StudentEnrollment').accept!
+    @course.enroll_user(teacher, 'TeacherEnrollment').accept!
+    login_as(teacher.primary_pseudonym.unique_id, password)
+
+    get "/courses/#{@course.id}/announcements"
+    expect_new_page_load { f('.btn-primary').click }
+    replace_content(f('input[name=title]'), topic_title)
+    type_in_tiny('textarea[name=message]', 'hi, first announcement')
+    f('#require_initial_post').click
+    expect_new_page_load { submit_form('.form-actions') }
+    announcement = Announcement.find_by_title(topic_title)
+    announcement[:require_initial_post].should == true
+    student_2 = student_in_course.user
+    announcement.discussion_entries.create!(:user => student_2, :message => student_2_entry)
+
+    login_as(student.primary_pseudonym.unique_id, password)
+    get "/courses/#{@course.id}/announcements/#{announcement.id}"
+    f('#discussion_subentries h2').text.should == "Replies are only visible to those who have posted at least one reply."
+    ff('.discussion_entry').each { |entry| entry.should_not include_text(student_2_entry) }
+    f('.discussion-reply-label').click
+    type_in_tiny('.reply-textarea', 'reply')
+    submit_form('.discussion-reply-form')
+    wait_for_ajaximations
+    ff('.discussion_entry .message')[1].should include_text(student_2_entry)
+  end
+
+  context "announcements as a student" do
+    before (:each) do
+      course_with_student_logged_in
+    end
+
+    it "should not show JSON when loading more announcements via pageless" do
+      50.times { @course.announcements.create!(:title => 'Hi there!', :message => 'Announcement time!') }
+      get "/courses/#{@course.id}/announcements"
+
+      start = ff(".discussionTopicIndexList .discussion-topic").length
+      driver.execute_script('window.scrollTo(0, 100000)')
+      keep_trying_until { ffj(".discussionTopicIndexList .discussion-topic").length > start }
+
+      f(".discussionTopicIndexList").should_not include_text('discussion_topic')
+    end
+
+    it "should validate that a student can not see an announcement with a delayed posting date" do
+      announcement_title = 'Hi there!'
+      announcement = @course.announcements.create!(:title => announcement_title, :message => 'Announcement time!', :delayed_post_at => Time.now + 1.day)
+      get "/courses/#{@course.id}/announcements"
+      wait_for_ajaximations
+
+      f('#content').should include_text('There are no announcements to show')
+      announcement.update_attributes(:delayed_post_at => nil)
+      announcement.reload
+      refresh_page # in order to see the announcement
+      f(".discussion-topic").should include_text(announcement_title)
+    end
+
+    it "should allow a group member to create an announcement" do
+      gc = @course.group_categories.create!
+      group = gc.groups.create!(:context => @course)
+      group.add_user(@student, 'accepted')
+
+      get "/groups/#{group.id}/announcements"
+      wait_for_ajaximations
+      expect {
+        create_announcement_manual(nil)
+        expect_new_page_load { submit_form('.form-actions') }
+      }.to change(Announcement, :count).by 1
+    end
+  end
+
+  context "announcements as a teacher" do
+    before (:each) do
+      course_with_teacher_logged_in
+    end
+
+    describe "shared bulk topics specs" do
+      let(:url) { "/courses/#{@course.id}/announcements/" }
+      let(:what_to_create) { Announcement }
+      it_should_behave_like "discussion and announcement main page tests"
+    end
+
+    describe "shared main page topics specs" do
+      let(:url) { "/courses/#{@course.id}/announcements/" }
+      let(:what_to_create) { Announcement }
+      it_should_behave_like "discussion and announcement individual tests"
+    end
+
+    it "should create a delayed announcement" do
+      get course_announcements_path(@course)
+      create_announcement_manual('input[type=checkbox][name=delay_posting]')
+      f('.ui-datepicker-trigger').click
+      datepicker_next
+      expect_new_page_load { submit_form('.form-actions') }
+      f('.discussion-fyi').should include_text('This topic will not be visible')
+    end
+
+    it "should have a teacher add a new entry to its own announcement" do
+      pending "delayed jobs"
+      create_announcement
+      get [@course, @announcement]
+
+      f('#content .add_entry_link').click
+      entry_text = 'new entry text'
+      type_in_tiny('textarea[name=message]', entry_text)
+      expect_new_page_load { submit_form('.form-actions') }
+      f('#entry_list .discussion_entry .content').should include_text(entry_text)
+      f('#left-side .announcements').click
+      f('.topic_reply_count').text.should eql('1')
+    end
+
+    it "should add and remove an external feed to announcements" do
+      get "/courses/#{@course.id}/announcements"
+
+      #add external feed to announcements
+      feed_name = 'http://www.google.com'
+
+      keep_trying_until do
+      driver.execute_script("$('#add_external_feed_form').css('display', 'block')")
+        f("#external_feed_url").should be_displayed
+      end
+
+      fj('#external_feed_url').send_keys(feed_name)
+      fj('input[aria-controls=header_match_container]').click
+      fj('input[name=header_match]').send_keys('blah')
+      #using fj to avoid selenium caching
+      expect {
+        submit_form(f('#add_external_feed_form'))
+        wait_for_ajaximations
+      }.to change(ExternalFeed, :count).by(1)
+
+      #delete external feed
+      f(".external_feed").should include_text('feed')
+      expect {
+        fj('.external_feed .close').click
+        wait_for_ajax_requests
+        element_exists('.external_feed').should be_false
+      }.to change(ExternalFeed, :count).by(-1)
+      ExternalFeed.count.should eql(0)
+    end
+
+    it "should show announcements to student view student" do
+      create_announcement
+      enter_student_view
+      get "/courses/#{@course.id}/announcements"
+
+      announcement = f('.discussionTopicIndexList .discussion-topic')
+      announcement.find_element(:css, '.discussion-summary').should include_text(@announcement.message)
+    end
+  end
 end

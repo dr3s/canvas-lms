@@ -55,8 +55,15 @@ module Context
     Submission = ::Submission
     WebConference = ::WebConference
     Wiki = ::Wiki
-    WikiNamespace = ::WikiNamespace
     WikiPage = ::WikiPage
+    
+    def self.get_for_string(str)
+      if RUBY_VERSION >= "1.9."
+        self.const_defined?(str, false) ? self.const_get(str, false) : nil
+      else
+        self.const_defined?(str) ? self.const_get(str) : nil
+      end
+    end
   end
 
   def add_aggregate_entries(entries, feed)
@@ -147,7 +154,7 @@ module Context
       res[:modules] = self.respond_to?(:context_modules) && !self.context_modules.active.empty?
       res[:quizzes] = self.respond_to?(:quizzes) && !self.quizzes.active.empty?
       res[:assignments] = self.respond_to?(:assignments) && !self.assignments.active.empty?
-      res[:pages] = self.respond_to?(:wiki) && !self.wiki.wiki_pages.active.empty?
+      res[:pages] = self.respond_to?(:wiki) && self.wiki_id && !self.wiki.wiki_pages.active.empty?
       res[:conferences] = self.respond_to?(:web_conferences) && !self.web_conferences.active.empty?
       res[:announcements] = self.respond_to?(:announcements) && !self.announcements.active.empty?
       res[:outcomes] = self.respond_to?(:learning_outcomes) && !self.learning_outcomes.empty?

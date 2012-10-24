@@ -47,7 +47,7 @@ class MediaObject < ActiveRecord::Base
     end
     super
   end
-  
+
   # if wait_for_completion is true, this will wait SYNCHRONOUSLY for the bulk
   # upload to complete. Wrap it in a timeout if you ever want it to give up
   # waiting.
@@ -57,11 +57,11 @@ class MediaObject < ActiveRecord::Base
     client = Kaltura::ClientV3.new
     client.startSession(Kaltura::SessionType::ADMIN)
     files = []
-    root_account_id = attachments.map{|a| a.namespace.split(/_/)[1] }.compact.first
+    root_account_id = attachments.map{|a| a.root_account_id }.compact.first
     attachments.select{|a| !a.media_object }.each do |attachment|
       files << {
                   :name       => attachment.display_name,
-                  :url        => attachment.cacheable_s3_url,
+                  :url        => attachment.cacheable_s3_download_url,
                   :media_type => (attachment.content_type || "").match(/\Avideo/) ? 'video' : 'audio',
                   :id         => attachment.id
                }
@@ -77,7 +77,7 @@ class MediaObject < ActiveRecord::Base
           res = client.bulkUploadGet(bulk_upload_id)
         end
       else
-        MediaObject.send_at(1.minute.from_now, :refresh_media_files, res[:id], attachments.map(&:id), root_account_id)
+        MediaObject.send_later_enqueue_args(:refresh_media_files, {:run_at => 1.minute.from_now, :priority => Delayed::LOW_PRIORITY}, res[:id], attachments.map(&:id), root_account_id)
       end
     end
 
@@ -92,7 +92,7 @@ class MediaObject < ActiveRecord::Base
     client.startSession(Kaltura::SessionType::ADMIN)
     res = client.bulkUploadCsv(csv)
     if !res[:ready]
-      MediaObject.send_at(1.minute.from_now, :refresh_media_files, res[:id], [], root_account_id)
+      MediaObject.send_later_enqueue_args(:refresh_media_files, {:run_at => 1.minute.from_now, :priority => Delayed::LOW_PRIORITY}, res[:id], [], root_account_id)
     else
       build_media_objects(res, root_account_id)
     end
@@ -115,7 +115,7 @@ class MediaObject < ActiveRecord::Base
       end
     end
   end
-  
+
   def self.build_media_objects(data, root_account_id)
     root_account = Account.find_by_id(root_account_id)
     data[:entries].each do |entry|
@@ -128,19 +128,24 @@ class MediaObject < ActiveRecord::Base
         mo.context = attachment.context
         mo.attachment_id = attachment.id
         attachment.update_attribute(:media_entry_id, entry[:entryId])
+        # check for attachments that were created temporarily, just to import a media object
+        if attachment.full_path.starts_with?(File.join(Folder::ROOT_FOLDER_NAME, CC::CCHelper::MEDIA_OBJECTS_FOLDER) + '/')
+          attachment.destroy(false)
+        end
       end
       mo.context ||= mo.root_account
       mo.save
     end
   end
-  
+
   def self.refresh_media_files(bulk_upload_id, attachment_ids, root_account_id, attempt=0)
     client = Kaltura::ClientV3.new
     client.startSession(Kaltura::SessionType::ADMIN)
     res = client.bulkUploadGet(bulk_upload_id)
     if !res[:ready]
-      if attempt < 5
-        MediaObject.send_at(10.minute.from_now, :refresh_media_files, bulk_upload_id, attachment_ids, root_account_id, attempt + 1) 
+      if attempt < Setting.get('media_object_bulk_refresh_max_attempts', '5').to_i
+        wait_period = Setting.get('media_object_bulk_refresh_wait_period', '30').to_i
+        MediaObject.send_later_enqueue_args(:refresh_media_files, {:run_at => wait_period.minutes.from_now, :priority => Delayed::LOW_PRIORITY}, bulk_upload_id, attachment_ids, root_account_id, attempt + 1)
       else
         # if it fails, then the attachment should no longer consider itself kalturable
         Attachment.update_all({:media_entry_id => nil}, "id IN (#{attachment_ids.join(",")}) OR root_attachment_id IN (#{attachment_ids.join(",")})") unless attachment_ids.empty?
@@ -150,7 +155,27 @@ class MediaObject < ActiveRecord::Base
       build_media_objects(res, root_account_id)
     end
   end
-  
+
+  def self.media_id_exists?(media_id)
+    client = Kaltura::ClientV3.new
+    client.startSession(Kaltura::SessionType::ADMIN)
+    info = client.mediaGet(media_id)
+    return !!info[:id]
+  end
+
+  def self.ensure_media_object(media_id, create_opts = {})
+    if !by_media_id(media_id).any?
+      self.send_later_enqueue_args(:create_if_id_exists, { :priority => Delayed::LOW_PRIORITY }, media_id, create_opts)
+    end
+  end
+
+  # typically call this in a delayed job, since it has to contact kaltura
+  def self.create_if_id_exists(media_id, create_opts = {})
+    if media_id_exists?(media_id) && !by_media_id(media_id).any?
+      create!(create_opts.merge(:media_id => media_id))
+    end
+  end
+
   def update_title_on_kaltura
     client = Kaltura::ClientV3.new
     client.startSession(Kaltura::SessionType::ADMIN)
@@ -246,7 +271,6 @@ class MediaObject < ActiveRecord::Base
   def data
     self.read_attribute(:data) || self.write_attribute(:data, {})
   end
-  
 
   def viewed!
     send_later(:updated_viewed_at_and_retrieve_details, Time.now) if !self.data[:last_viewed_at] || self.data[:last_viewed_at] > 1.hour.ago

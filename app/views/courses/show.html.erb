@@ -14,7 +14,7 @@
     <% if can_do(@context, @current_user, :manage_content) %>
       <div class="rs-margin-lr rs-margin-top rs-margin-bottom">
         <a href="#" class="button button-sidebar-wide wizard_popup_link  <%= 'auto_open' if @context.created? || @context.claimed? %>"><%= image_tag "help.png" %> <%= t('links.course_setup', %{Course Setup Checklist}) %></a>
-        <a class="button button-sidebar-wide" href="<%= context_url(@context, :controller => :announcements) %>#new"><%= image_tag "add.png" %> <%= t('links.new_announcement', %{New Announcement}) %></a>
+        <a class="button button-sidebar-wide" href="<%= context_url(@context, :new_context_discussion_topic_url, :is_announcement => true) %>"><%= image_tag "add.png" %> <%= t('links.new_announcement', %{New Announcement}) %></a>
       </div>
     <% end %>
     <% if @context.available? && @context.self_enrollment && @context.open_enrollment && (!@context_enrollment || !@context_enrollment.active?) && !session["role_course_#{@context.id}"] %>
@@ -52,7 +52,7 @@
     <%= nbsp unless @current_user %>
   </div>
   <% if @course_home_view == 'wiki' %>
-    <% jammit_js :wiki %>
+    <% js_bundle :wiki %>
     <%= render :partial => "wiki_pages/wiki_right_side", :locals => {:course_home => true} %>
   <% elsif @course_home_view == 'modules' %>
     <%= render :partial => "context_modules/context_module_right_side", :locals => {:course_home => true} %>
@@ -73,33 +73,38 @@
   <% if @show_recent_feedback %>
     <%= render :partial => "shared/event_list", :object => @recent_feedback, :locals => {:title => t('titles.recent_feedback', "Recent Feedback"), :display_count => 3, :period => t('period_name', "the last 2 weeks"), :contexts_to_link_to => @context, :is_recent_feedback => true} %>
   <% end %>
-  <% if can_do(@context, @current_user, :delete) && !@context.deleted? %>
-    <%= link_to image_tag("delete.png") + " " + t('links.delete', "Delete This Course"), context_url(@context, :context_confirm_action_url), :class => "button button-sidebar-wide" %>
-  <% end %>
 <% end %>
 
-<% 
+<%
   case @course_home_view
   when 'wiki'
-    %><% js_block do %><%= javascript_include_tag "tinymce/jscripts/tiny_mce/tiny_mce.js" %><% end %><%
+    jammit_css :tinymce
   when 'modules'
-    jammit_js :context_modules
+    js_bundle :context_modules
   when 'assignments'
-    jammit_js :assignments
+    js_bundle :assignments
   when 'syllabus'
-    jammit_js :syllabus
-    %><% js_block do %><%= javascript_include_tag "tinymce/jscripts/tiny_mce/tiny_mce.js" %><% end %><%
-  end 
+    js_bundle :syllabus
+    jammit_css :tinymce
+  end
 %>
 
 <% js_block do %>
 <script>
+
+require([
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jqueryui/dialog',
+  'jquery.loadingImg' /* loadingImg, loadingImage */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function($) {
+
 $(document).ready(function() {
   $(".self_unenrollment_link").click(function(event) {
-    $("#self_unenrollment_dialog").dialog('close').dialog({
-      autoOpen: false,
+    $("#self_unenrollment_dialog").dialog({
       title: <%= raw t('titles.drop_course', "Drop this Course").to_json %>
-    }).dialog('open');
+    });
   });
   $("#self_unenrollment_dialog .action").click(function() {
     $("#self_unenrollment_dialog a.button").attr('disabled', true);
@@ -109,10 +114,9 @@ $(document).ready(function() {
     $("#self_enrollment_dialog").dialog('close');
   });
   $(".self_enrollment_link").click(function(event) {
-    $("#self_enrollment_dialog").dialog('close').dialog({
-      autoOpen: false,
+    $("#self_enrollment_dialog").dialog({
       title: <%= raw t('titles.join_course', "Join this Course").to_json %>
-    }).dialog('open');
+    });
   });
   $("#self_enrollment_dialog .action").click(function() {
     $("#self_enrollment_dialog a.button").attr('disabled', true);
@@ -183,6 +187,8 @@ $(document).ready(function() {
     $("#course_home_content").show();
   });
 });
+
+});
 </script>
 <% end %>
 <% if @context.created? || @context.claimed? %>
@@ -190,6 +196,14 @@ $(document).ready(function() {
   <h2><%= t('headings.unpublished', %{This Course is Unpublished}) %></h2>
   <div class="body"><%= t 'teachers_only', "Only teachers can see this course until it is *published*", :wrapper => (can_do(@context, @current_user, :update) ? '<a href="#" class="publish_course_in_wizard_link"><b>\1</b></a>' : '\1') %>
   </div>
+  </div>
+<% end %>
+<% if @context.has_open_course_imports? %>
+  <div class="reminder" style="text-align: center;">
+    <h2><%= t('headings.importing', 'This course is being imported') %></h2>
+    <div class="body">
+      <p><%= t 'importing', 'Course copy/migration in progress. This means some content may be temporarily unavailable.' %></p>
+    </div>
   </div>
 <% end %>
 <% if @pending_enrollment %>
@@ -262,7 +276,7 @@ This layout is probably best for courses that aren't based on a specific schedul
     <%= render :partial => 'assignments/syllabus_content', :locals => {:course_home => true} %>
   <% else %>
     <% cache(safe_cache_key([@current_user, @contexts, @current_conferences, 'recent_messages'])) do %>
-      <%= render :partial => 'shared/recent_messages', :object => ((@current_user && @current_user.stream_items(:contexts => @contexts)) || []), :locals => {:conferences => @current_conferences, :show_context => @contexts && @contexts.length > 1 } %>
+      <%= render :partial => 'shared/recent_messages', :object => ((@current_user && @current_user.recent_stream_items(:contexts => @contexts)) || []), :locals => {:conferences => @current_conferences, :show_context => @contexts && @contexts.length > 1 } %>
     <% end %>
   <% end %>
 </div>
@@ -275,4 +289,4 @@ This layout is probably best for courses that aren't based on a specific schedul
 <% end %>
 <%= render :partial => "course_wizard_box" %>
 
-<% jammit_js :course %>
+<% js_bundle :course %>

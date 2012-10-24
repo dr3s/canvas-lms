@@ -1,4 +1,4 @@
-<% jammit_js :select_content_dialog %>
+<% js_bundle :select_content_dialog %>
 <% jammit_css :select_content_dialog %>
 <% only ||= nil # only is an optimization, so that tabs that aren't going to be used won't have their data loaded %>
 <% cache([@context, 'select_context_content_dialog', only].cache_key) do %>
@@ -148,9 +148,9 @@
             <optgroup label="<%= folder.full_name %>">
               <% 
               attachments = if @context.grants_right?(@current_user, session, :manage_files)
-                              folder.active_file_attachments
+                              folder.active_file_attachments.by_position_then_display_name
                             else
-                              folder.visible_file_attachments
+                              folder.visible_file_attachments.by_position_then_display_name
                             end
               %>
               <% attachments.sort_by{|file| file.display_name }.each do |file| %>
@@ -172,7 +172,7 @@
                 <%= before_label :folder, "Folder" %>
               </td><td>
                 <% Folder.root_folders(@context) %>
-                <% folders = @context.active_folders_with_sub_folders %>
+                <% folders = @context.active_folders_with_sub_folders.by_position %>
                 <% root_folders = folders.select{|f| f.parent_folder_id == nil} %>
                 <select name="attachment[folder_id]" id="attachment_folder_id">
                   <%= folders_as_options(root_folders, :all_folders => folders, :max_depth => 1) %>
@@ -198,8 +198,27 @@
         </select>
         </div>
         <div class="new" style="margin-top: 5px;">
-          <%= before_label :quiz_name, "Quiz Name" %>
-          <input type="text" name="quiz[title]" class="item_title"/>
+          <input type="hidden" name="quiz[quiz_type]" value="assignment" />
+          <table>
+            <tr>
+              <td><%= before_label :quiz_name, "Quiz Name" %></td>
+              <td><input type="text" name="quiz[title]" class="item_title"/></td>
+            </tr><tr>
+              <td><%= before_label :quiz_group, "Group" %></td>
+              <td>
+                <select name="quiz[assignment_group_id]">
+                  <% cnt = 0 %>
+                  <% @context.assignment_groups.active.each do |group| %>
+                    <% cnt += 1 %>
+                    <option value="<%= group.id %>"><%= group.name %></option>
+                  <% end %>
+                  <% if cnt == 0 %>
+                    <option value=""><%= t 'options.assignments', "Assignments" %></option>
+                  <% end %>
+                </select>
+              </td>
+            </tr>
+          </table>
           <a href="<%= context_url(@context, :context_quizzes_url) %>" style="display: none;" class="add_item_url">&nbsp;</a>
         </div>
       </div>
@@ -245,8 +264,8 @@
         </div>
         <div class="new" style="margin-top: 5px;">
           <%= before_label :topic_name, "Topic Name" %>
-          <input type="text" name="discussion_topic[title]" class="item_title"/>
-          <a href="<%= context_url(@context, :context_discussion_topics_url) %>" style="display: none;" class="add_item_url">&nbsp;</a>
+          <input type="text" name="title" class="item_title"/>
+          <a href="<%= context_url(@context, :api_v1_context_discussion_topics_url) %>" style="display: none;" class="add_item_url">&nbsp;</a>
         </div>
       </div>
       <% end %>

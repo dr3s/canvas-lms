@@ -21,8 +21,10 @@ module CC::Importer::Canvas
     
     def convert_quizzes
       assessments = []
-      
       qti_folder = File.join(@unzipped_file_path, ASSESSMENT_NON_CC_FOLDER)
+
+      return unless File.exists?(qti_folder) && File.directory?(qti_folder)
+
       run_qti_converter(qti_folder)
       @course[:assessment_questions] = convert_questions
       @course[:assessments] = convert_assessments
@@ -50,7 +52,7 @@ module CC::Importer::Canvas
     
     def get_quiz_meta(doc, quiz)
       ['title', 'description', 'access_code', 'ip_filter',
-       'quiz_type', 'scoring_policy'].each do |string_type|
+       'quiz_type', 'scoring_policy', 'hide_results'].each do |string_type|
         val = get_node_val(doc, string_type)
         quiz[string_type] = val unless val.nil?
       end
@@ -63,7 +65,7 @@ module CC::Importer::Canvas
       quiz['allowed_attempts'] = get_int_val(doc, 'allowed_attempts')
       ['could_be_locked','anonymous_submissions','show_correct_answers',
        'require_lockdown_browser','require_lockdown_browser_for_results',
-       'hide_results','shuffle_answers','available'
+       'shuffle_answers','available'
       ].each do |bool_val|
         val = get_bool_val(doc, bool_val)
         quiz[bool_val] = val unless val.nil?
@@ -79,6 +81,8 @@ module CC::Importer::Canvas
     def run_qti_converter(qti_folder)
       # convert to 2.1
       @dest_dir_2_1 = File.join(qti_folder, "qti_2_1")
+      return unless File.exists?(qti_folder)
+
       command = Qti.get_conversion_command(@dest_dir_2_1, qti_folder)
       logger.debug "Running migration command: #{command}"
       python_std_out = `#{command}`

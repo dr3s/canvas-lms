@@ -37,6 +37,7 @@ module CC
               "xsi:schemaLocation"=> "#{CCHelper::CANVAS_NAMESPACE} #{CCHelper::XSD_URI}"
       ) do |mods_node|
         @course.context_modules.active.each do |cm|
+          next unless export_object?(cm)
           mod_migration_id = CCHelper.create_key(cm)
           # context modules are in order and a pre-req can only reference
           # a previous module, so just adding as we go is okay
@@ -67,11 +68,15 @@ module CC
                 ct_migration_id = CCHelper.create_key(ct)
                 ct_id_map[ct.id] = ct_migration_id
                 items_node.item(:identifier=>ct_migration_id) do |item_node|
+                  unless ['ContextModuleSubHeader', 'ExternalUrl'].member? ct.content_type
+                    add_item_to_export(ct.content)
+                  end
                   item_node.content_type ct.content_type
                   item_node.title ct.title
                   item_node.identifierref CCHelper.create_key(ct.content_or_self) unless ct.content_type == 'ContextModuleSubHeader'
                   item_node.url ct.url if ["ContextExternalTool", 'ExternalUrl'].member? ct.content_type
                   item_node.position ct.position
+                  item_node.new_tab ct.new_tab
                   item_node.indent ct.indent
                 end
               end

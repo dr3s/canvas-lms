@@ -16,7 +16,16 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-I18n.scoped('sis_import', function(I18n) {
+define([
+  'i18n!sis_import',
+  'jquery' /* $ */,
+  'str/htmlEscape',
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* formSubmit, formErrors */,
+  'jquery.instructure_misc_plugins' /* showIf, disableIf */,
+  'jqueryui/progressbar' /* /\.progressbar/ */
+], function(I18n, $, htmlEscape) {
+
 $(document).ready(function(event) {
   var state = 'nothing';
   
@@ -47,7 +56,7 @@ $(document).ready(function(event) {
       output += "<li>" + I18n.t('headers.import_errors', "Errors that prevent importing") + "\n<ul>";
       for(var i in batch.processing_errors) {
         var message = batch.processing_errors[i];
-        output += "<li>" + $.htmlEscape(message[0]) + " - " + $.htmlEscape(message[1]) + "</li>";
+        output += "<li>" + htmlEscape(message[0]) + " - " + htmlEscape(message[1]) + "</li>";
       }
       output += "</ul>\n</li>";
     }
@@ -55,7 +64,7 @@ $(document).ready(function(event) {
       output += "<li>" + I18n.t('headers.import_warnings', "Warnings") + "\n<ul>";
       for(var i in batch.processing_warnings) {
         var message = batch.processing_warnings[i];
-        output += "<li>" + $.htmlEscape(message[0]) + " - " + $.htmlEscape(message[1]) + "</li>";
+        output += "<li>" + htmlEscape(message[0]) + " - " + htmlEscape(message[1]) + "</li>";
       }
       output += "</ul>\n</li>";
     }
@@ -75,6 +84,8 @@ $(document).ready(function(event) {
     output += "<li>" + I18n.t('import_counts.users', "Users: %{user_count}", {user_count: batch.data.counts.users}) + "</li>";
     output += "<li>" + I18n.t('import_counts.enrollments', "Enrollments: %{enrollment_count}", {enrollment_count: batch.data.counts.enrollments}) + "</li>";
     output += "<li>" + I18n.t('import_counts.crosslists', "Crosslists: %{crosslist_count}", {crosslist_count: batch.data.counts.xlists}) + "</li>";
+    output += "<li>" + I18n.t('import_counts.groups', "Groups: %{group_count}", {group_count: batch.data.counts.groups}) + "</li>";
+    output += "<li>" + I18n.t('import_counts.group_enrollments', "Group Enrollments: %{group_enrollments_count}", {group_enrollments_count: batch.data.counts.group_memberships}) + "</li>";
     output += "</ul></li></ul>";
     
     return output
@@ -107,27 +118,12 @@ $(document).ready(function(event) {
       var waitTime = 1500;
       $.ajaxJSON(location.href, 'GET', {}, function(data) {
         state = "updating";
-        var sis_batch = data.sis_batch;
+        var sis_batch = data;
         var progress = 0;
         if(sis_batch) {
           progress = Math.max($(".copy_progress").progressbar('option', 'value') || 0, sis_batch.progress);
           $(".copy_progress").progressbar('option', 'value', progress);
           $("#import_log").empty();
-          if(sis_batch.sis_batch_log_entries) {
-            for(var idx in sis_batch.sis_batch_log_entries) {
-              var entry = sis_batch.sis_batch_log_entries[idx].sis_batch_log_entry;
-              var lines = entry.text.split("\\n");
-              if($("#import_log #log_" + entry.id).length == 0) {
-                var $holder = $("<div id='log_" + entry.id + "'/>");
-                for(var jdx in lines) {
-                  var $div = $("<div/>");
-                  $div.text(lines[jdx]);
-                  $holder.append($div);
-                }
-                $("#import_log").append($holder);
-              }
-            }
-          }
         }
         if(!sis_batch || sis_batch.workflow_state == 'imported') {
           $("#sis_importer").hide();
@@ -138,14 +134,14 @@ $(document).ready(function(event) {
           $(".progress_bar_holder").hide();
           $("#sis_importer").hide();
           var message = I18n.t('errors.import_failed_code', "There was an error importing your SIS data. No records were imported.  Please notify your system administrator and give them the following code: \"%{code}\"", {code: code});
-          $(".sis_messages .error_message").html(message);
+          $(".sis_messages .sis_error_message").html(message);
           $(".sis_messages").show();
         } else if(sis_batch.workflow_state == 'failed_with_messages') {
           $(".progress_bar_holder").hide();
           $("#sis_importer").hide();
           var message = I18n.t('errors.import_failed_messages', "No SIS records were imported. The import failed with these messages:");
           message += createMessageHtml(sis_batch);
-          $(".sis_messages .error_message").html(message);
+          $(".sis_messages .sis_error_message").html(message);
           $(".sis_messages").show();
         } else if(sis_batch.workflow_state == 'imported_with_messages') {
           $(".progress_bar_holder").hide();
@@ -174,11 +170,11 @@ $(document).ready(function(event) {
   $("#sis_importer").formSubmit({
    fileUpload: true,
    success: function(data) {
-     if(data && data.sis_batch) {
+     if(data && data.id) {
        startPoll();
      } else {
        //show error message
-       $(".sis_messages .error_message").text(data.error_message);
+       $(".sis_messages .sis_error_message").text(data.error_message);
        $(".sis_messages").show();
        if(data.batch_in_progress){
          startPoll();
@@ -195,7 +191,7 @@ $(document).ready(function(event) {
       state = "checking";
       $.ajaxJSON(location.href, 'GET', {}, function(data) {
         state = "nothing";
-        var sis_batch = data.sis_batch;
+        var sis_batch = data;
         var progress = 0;
         if(sis_batch && (sis_batch.workflow_state == "importing" || sis_batch.workflow_state == "created")) {
           state = "nothing";

@@ -1,13 +1,27 @@
-I18n.scoped 'AssignmentDetailsDialog', (I18n) ->
-  class @SubmissionDetailsDialog
+define [
+  'i18n!submission_details_dialog'
+  'jquery'
+  'jst/SubmissionDetailsDialog'
+  'compiled/gradebook2/Turnitin'
+  'jst/_submission_detail' # a partial needed by the SubmissionDetailsDialog template
+  'jst/_turnitinScore' # a partial needed by the submission_detail partial
+  'jquery.ajaxJSON'
+  'jquery.disableWhileLoading'
+  'jquery.instructure_forms'
+  'jqueryui/dialog'
+  'jquery.instructure_misc_plugins'
+  'vendor/jquery.scrollTo'
+], (I18n, $, submissionDetailsDialog, {extractDataFor}) ->
+
+  class SubmissionDetailsDialog
     constructor: (@assignment, @student, @options) ->
       @url = @options.change_grade_url.replace(":assignment", @assignment.id).replace(":submission", @student.id)
-      @submission = $.extend {}, @student["assignment_#{@assignment.id}"], 
+      @submission = $.extend {}, @student["assignment_#{@assignment.id}"],
         assignment: @assignment
         speedGraderUrl: "#{@options.context_url}/gradebook/speed_grader?assignment_id=#{@assignment.id}#%7B%22student_id%22%3A#{@student.id}%7D"
         loading: true
       @dialog = $('<div class="use-css-transitions-for-show-hide" style="padding:0;"/>')
-      @dialog.html(Template('SubmissionDetailsDialog', @submission))
+      @dialog.html(submissionDetailsDialog(@submission))
         .dialog
           title: @student.name
           width: 600
@@ -20,7 +34,7 @@ I18n.scoped 'AssignmentDetailsDialog', (I18n) ->
           event.preventDefault()
           $(event.currentTarget).disableWhileLoading $.ajaxJSON @url, 'PUT', $(event.currentTarget).getFormData(), (data) =>
             @update(data)
-            setTimeout => 
+            setTimeout =>
               @dialog.dialog('close')
             , 500
 
@@ -29,31 +43,30 @@ I18n.scoped 'AssignmentDetailsDialog', (I18n) ->
 
     open: =>
       @dialog.dialog('open')
-    
+
     scrollCommentsToBottom: =>
       @dialog.find('.submission_details_comments').scrollTop(999999)
-      
+
     update: (newData) =>
       $.extend @submission, newData
       @submission.submission_history[0] = @submission
       @submission.moreThanOneSubmission = @submission.submission_history.length > 1
       @submission.loading = false
       for submission in @submission.submission_history
-        submission["submission_type_is#{submission.submission_type}"] = true
         submission.submissionWasLate = @assignment.due_at && new Date(@assignment.due_at) > new Date(submission.submitted_at)
         for comment in submission.submission_comments || []
           comment.url = "#{@options.context_url}/users/#{comment.author_id}"
           urlPrefix = "#{location.protocol}//#{location.host}"
           comment.image_url = "#{urlPrefix}/images/users/#{comment.author_id}?fallback=#{encodeURIComponent(urlPrefix+'/images/messages/avatar-50.png')}"
+        submission.turnitin = extractDataFor(submission, "submission_#{submission.id}", @options.context_url)
         for attachment in submission.attachments || []
-          if turnitinDataForThisAttachment = submission.turnitin_data?["attachment_#{attachment.id}"]
-            attachment.turnitinUrl = "#{@options.context_url}/assignments/#{@assignment.id}/submissions/#{@student.id}/turnitin/attachment_#{attachment.id}"
-            attachment.turnitin_data = turnitinDataForThisAttachment
-      @dialog.html(Template('SubmissionDetailsDialog', @submission))
+          attachment.turnitin = extractDataFor(submission, "attachment_#{attachment.id}", @options.context_url)
+      @dialog.html(submissionDetailsDialog(@submission))
       @dialog.find('select').trigger('change')
       @scrollCommentsToBottom()
-    
+
     @cachedDialogs: {}
 
     @open: (assignment, student, options) ->
       (SubmissionDetailsDialog.cachedDialogs["#{assignment.id}-#{student.id}"] ||= new SubmissionDetailsDialog(assignment, student, options)).open()
+

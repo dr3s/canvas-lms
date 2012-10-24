@@ -15,8 +15,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+define([
+  'i18n!groups',
+  'jquery' /* $ */,
+  'jquery.instructure_forms' /* formSubmit */,
+  'jquery.loadingImg' /* loadingImage */,
+  'jquery.templateData' /* fillTemplateData */,
+  'vendor/jquery.pageless' /* pageless */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function(I18n, $) {
 
-I18n.scoped('groups', function(I18n) {
   $(document).ready(function() {
     $(".add_group_link").click(function(event) {
       event.preventDefault();
@@ -38,9 +46,11 @@ I18n.scoped('groups', function(I18n) {
         $(this).slideUp();
         var $group = $("#group_blank").clone(true);
         $group.fillTemplateData({
-          data: data.group || data.course_assigned_group,
+          data: data,
           hrefValues: ['id']
         });
+        $group.attr('id', "group_" + data.id)
+        $group.find(".members_count").text(I18n.t('member', 'member', { count: data.members_count }));
         $("#group_blank").before($group.show());
         $("html,body").scrollTo($group);
         $group.animate({'backgroundColor': '#FFEE88'}, 1000)

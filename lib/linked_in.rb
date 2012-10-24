@@ -39,12 +39,13 @@ module LinkedIn
     access_token ||= linked_in_retrieve_access_token
     body = access_token.get('/v1/people/~:(id,first-name,last-name,public-profile-url,picture-url)').body
     data = Nokogiri::XML(body)
-    res = {}
+    res = {}.with_indifferent_access
     res[:id] = data.css('id')[0].content
     res[:first_name] = data.css('first-name')[0].content
     res[:last_name] = data.css('last-name')[0].content
     res[:profile_url] = data.css('public-profile-url')[0].content
-    res[:picture_url] = data.css('picture-url')[0].content rescue nil
+    # see https://developer.linkedin.com/forum/ssl-profile-picture-url-https
+    res[:picture_url] = data.css('picture-url')[0].content.gsub('http://media.linkedin.com', 'https://m1.licdn.com') rescue nil
     res
   end
 
@@ -59,7 +60,9 @@ module LinkedIn
   
   def linked_in_get_access_token(oauth_request, oauth_verifier)
     consumer = linked_in_consumer
-    request_token = session.delete(:oauth_linked_in_request_token)
+    request_token = OAuth::RequestToken.new(consumer,
+                                            session.delete(:oauth_linked_in_request_token_token),
+                                            session.delete(:oauth_linked_in_request_token_secret))
     access_token = request_token.get_access_token(:oauth_verifier => oauth_verifier)
     service_user_id, service_user_name, service_user_url = linked_in_get_service_user(access_token)
     session[:oauth_linked_in_access_token_token] = access_token.token
@@ -74,8 +77,8 @@ module LinkedIn
         :service_user_name => service_user_name,
         :service_user_url => service_user_url
       )
-      session[:oauth_linked_in_access_token_token] = nil
-      session[:oauth_linked_in_access_token_secret] = nil
+      session.delete(:oauth_linked_in_access_token_token)
+      session.delete(:oauth_linked_in_access_token_secret)
     end
     access_token
   end
@@ -83,7 +86,8 @@ module LinkedIn
   def linked_in_request_token_url(return_to)
     consumer = linked_in_consumer
     request_token = consumer.get_request_token(:oauth_callback => oauth_success_url(:service => 'linked_in'))
-    session[:oauth_linked_in_request_token] = request_token
+    session[:oauth_linked_in_request_token_token] = request_token.token
+    session[:oauth_linked_in_request_token_secret] = request_token.secret
     OauthRequest.create(
       :service => 'linked_in',
       :token => request_token.token,
@@ -154,10 +158,7 @@ module LinkedIn
   end
   
   def self.config
-    # Return existing value, even if nil, as long as it's defined
-    return @config if defined?(@config)
-    @config ||= Canvas::Plugin.find(:linked_in).try(:settings)
-    @config ||= (YAML.load_file(RAILS_ROOT + "/config/linked_in.yml")[RAILS_ENV] rescue nil)
+    Canvas::Plugin.find(:linked_in).try(:settings) || Setting.from_config('linked_in')
   end
   
 end

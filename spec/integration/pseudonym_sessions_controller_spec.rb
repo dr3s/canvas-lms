@@ -47,14 +47,14 @@ describe PseudonymSessionsController do
       stubby("yes\n#{user.pseudonyms.first.unique_id}\n")
 
       get login_url
-      redirect_until(@cas_client.add_service_to_login_url(login_url))
+      redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
 
-      get login_url :ticket => 'ST-abcd'
+      get cas_login_url :ticket => 'ST-abcd'
       response.should redirect_to(dashboard_url(:login_success => 1))
       session[:cas_login].should == true
 
       get logout_url
-      response.should redirect_to(@cas_client.logout_url(login_url))
+      response.should redirect_to(@cas_client.logout_url(cas_login_url))
     end
 
     it "should inform the user CAS validation denied" do
@@ -63,10 +63,10 @@ describe PseudonymSessionsController do
       stubby("no\n\n")
 
       get login_url
-      redirect_until(@cas_client.add_service_to_login_url(login_url))
+      redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
 
-      get login_url :ticket => 'ST-abcd'
-      response.should redirect_to(login_url :no_auto => true)
+      get cas_login_url :ticket => 'ST-abcd'
+      response.should redirect_to(cas_login_url :no_auto => true)
       flash[:delegated_message].should match(/There was a problem logging in/)
     end
 
@@ -79,10 +79,10 @@ describe PseudonymSessionsController do
       end
 
       get login_url
-      redirect_until(@cas_client.add_service_to_login_url(login_url))
+      redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
 
-      get login_url :ticket => 'ST-abcd'
-      response.should redirect_to(login_url :no_auto => true)
+      get cas_login_url :ticket => 'ST-abcd'
+      response.should redirect_to(cas_login_url :no_auto => true)
       flash[:delegated_message].should match(/There was a problem logging in/)
     end
 
@@ -92,22 +92,12 @@ describe PseudonymSessionsController do
       stubby("yes\nnonexistentuser\n")
 
       get login_url
-      redirect_until(@cas_client.add_service_to_login_url(login_url))
+      redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
 
-      get login_url :ticket => 'ST-abcd'
-      response.should redirect_to(@cas_client.logout_url(login_url :no_auto => true))
-      get login_url :no_auto => true
+      get cas_login_url :ticket => 'ST-abcd'
+      response.should redirect_to(@cas_client.logout_url(cas_login_url :no_auto => true))
+      get cas_login_url :no_auto => true
       flash[:delegated_message].should match(/Canvas doesn't have an account for user/)
-    end
-
-    it "should redirect to alternate CAS login page if so configured, and frame bust on login" do
-      account_with_cas({:account => Account.default, :cas_log_in_url => 'http://example.com/cas'})
-
-      get login_url
-      redirect_until('http://example.com/cas')
-
-      get login_url :ticket => 'ST-abcd'
-      response.should render_template('shared/exit_frame')
     end
 
     it "should login case insensitively" do
@@ -117,9 +107,9 @@ describe PseudonymSessionsController do
       stubby("yes\n#{user.pseudonyms.first.unique_id.capitalize}\n")
 
       get login_url
-      redirect_until(@cas_client.add_service_to_login_url(login_url))
+      redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
 
-      get login_url :ticket => 'ST-abcd'
+      get cas_login_url :ticket => 'ST-abcd'
       response.should redirect_to(dashboard_url(:login_success => 1))
       session[:cas_login].should == true
     end

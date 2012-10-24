@@ -18,12 +18,48 @@
 
 # @API Users
 class ProfileController < ApplicationController
-  before_filter :require_user
-  before_filter { |c| c.active_tab = "profile" }
+  before_filter :require_registered_user, :except => [:show, :settings, :communication, :communication_update]
+  before_filter :require_user, :only => [:settings, :communication, :communication_update]
+  before_filter :require_user_for_private_profile, :only => :show
+  before_filter :reject_student_view_student
+  before_filter :require_password_session, :only => [:settings, :communication, :communication_update, :update]
 
-  include Api::V1::User
+  include Api::V1::Avatar
+  include Api::V1::Notification
+  include Api::V1::NotificationPolicy
+  include Api::V1::CommunicationChannel
+  include Api::V1::UserProfile
 
-  # @API
+  include TextHelper
+
+  def show
+    unless @current_user && @domain_root_account.enable_profiles?
+      return unless require_password_session
+      settings
+      return
+    end
+
+    @user = User.find(params[:id])
+    @active_tab = "profile"
+    @context = @user.profile if @user == @current_user
+
+    @user_data = profile_data(
+      @user.profile,
+      @current_user,
+      session,
+      ['links', 'user_services']
+    )
+
+    known_user = @user_data[:common_contexts].present?
+    if @user_data[:known_user] # if you can message them, you can see the profile
+      add_crumb(t('crumbs.settings_frd', "%{user}'s settings", :user => @user.short_name), user_profile_path(@user))
+      return render :action => :show
+    else
+      return render :action => :unauthorized
+    end
+  end
+
+  # @API Get user profile
   # Returns user profile data, including user id, name, and profile pic.
   #
   # When requesting the profile for the user accessing the API, the user's
@@ -34,15 +70,17 @@ class ProfileController < ApplicationController
   #   {
   #     'id': 1234,
   #     'name': 'Sample User',
+  #     'short_name': 'Sample User'
   #     'sortable_name': 'user, sample',
-  #     'email': 'sample_user@example.com',
+  #     'primary_email': 'sample_user@example.com',
   #     'login_id': 'sample_user@example.com',
   #     'sis_user_id': 'sis1',
   #     'sis_login_id': 'sis1-login',
+  #     // The avatar_url can change over time, so we recommend not caching it for more than a few hours
   #     'avatar_url': '..url..',
   #     'calendar': { 'ics' => '..url..' }
   #   }
-  def show
+  def settings
     if api_request?
       # allow querying this basic profile data for the current user, or any
       # user the current user has view_statistics access to
@@ -59,125 +97,95 @@ class ProfileController < ApplicationController
     @default_pseudonym = @user.primary_pseudonym
     @pseudonyms = @user.pseudonyms.active
     @password_pseudonyms = @pseudonyms.select{|p| !p.managed_password? }
-    @context = UserProfile.new(@user)
+    @context = @user.profile
+    @active_tab = "profile_settings"
     respond_to do |format|
       format.html do
-        add_crumb(t(:crumb, "%{user}'s profile", :user => @user.short_name), profile_path )
+        add_crumb(t(:crumb, "%{user}'s settings", :user => @user.short_name), settings_profile_path )
         render :action => "profile"
       end
       format.json do
-        hash = user_json(@user, @current_user, session)
-        hash[:primary_email] = @default_email_channel.try(:path)
-        hash[:login_id] ||= @default_pseudonym.try(:unique_id)
-        if service_enabled?(:avatars)
-          hash[:avatar_url] = avatar_image_url(@user.id)
-        end
-        if @user == @current_user
-          hash[:calendar] = { :ics => "#{feeds_calendar_url(@user.feed_code)}.ics" }
-        end
-        render :json => hash
+        render :json => user_profile_json(@user.profile, @current_user, session, params[:include])
       end
     end
   end
 
-  def update_communication
-    params[:root_account] = @domain_root_account
-    @policies = NotificationPolicy.setup_for(@current_user, params)
-    render :json => @policies.to_json
-  end
-  
   def communication
     @user = @current_user
     @user = User.find(params[:id]) if params[:id]
-
-    add_crumb(@user.short_name, profile_path )
-    add_crumb(t(:crumb_notification_preferences, "Notification Preferences"), communication_profile_path )
-
-    if @user.communication_channel.blank?
-      flash[:error] = t('errors.no_channels', "Please define at least one email address or other way to be contacted before setting notification preferences.")
-      redirect_to profile_url
-      return
-    end
-
-    # Add communication channel for users that already had Twitter
-    # integrated before we started offering it as a cc
-    twitter_service = @user.user_services.find_by_service('twitter')
-    twitter_service.assert_communication_channel if twitter_service
-    @default_pseudonym = @user.primary_pseudonym
-    @pseudonyms = @user.pseudonyms.active
-    @channels = @user.communication_channels.unretired
     @current_user.used_feature(:cc_prefs)
-    @notification_categories = Notification.dashboard_categories(@user)
-    @policies = @user.notification_policies
-    @context = UserProfile.new(@user)
-    @active_tab = "communication-preferences"
-    if @policies.empty?
-      @notification_categories.each do |category|
-        policy = @user.notification_policies.build
-        policy.notification = category
-        policy.communication_channel = @user.communication_channel
-      end
-    end
-    has_facebook_installed = !@current_user.user_services.for_service('facebook').empty?
-    @policies = @policies.select{|p| (p.communication_channel && p.communication_channel.path_type != 'facebook') || has_facebook_installed }
-    @email_channels = @channels.select{|c| c.path_type == "email"}
-    @sms_channels = @channels.select{|c| c.path_type == 'sms'}
-    @other_channels = @channels.select{|c| c.path_type != "email"}
+    @context = @user.profile
+    @active_tab = 'notifications'
+
+    # Get the list of Notification models (that are treated like categories) that make up the full list of Categories.
+    full_category_list = Notification.dashboard_categories(@user)
+    js_env  :NOTIFICATION_PREFERENCES_OPTIONS => {
+      :channels => @user.communication_channels.all_ordered_for_display(@user).map { |c| communication_channel_json(c, @user, session) },
+      :policies => NotificationPolicy.setup_with_default_policies(@user, full_category_list).map{ |p| notification_policy_json(p, @user, session) },
+      :categories => full_category_list.map{ |c| notification_category_json(c, @user, session) },
+      :update_url => communication_update_profile_path
+    }
   end
-  
+
+  def communication_update
+    params[:root_account] = @domain_root_account
+    NotificationPolicy.setup_for(@current_user, params)
+    render :json => {}, :status => :ok
+  end
+
+  # @API List avatar options
+  # Retrieve the possible user avatar options that can be set with the user update endpoint. The response will be an array of avatar records. If the 'type' field is 'attachment', the record will include all the normal attachment json fields; otherwise it will include only the 'url' and 'display_name' fields. Additionally, all records will include a 'type' field and a 'token' field. The following explains each field in more detail
+  # type:: ["gravatar"|"attachment"|"no_pic"] The type of avatar record, for categorization purposes.
+  # url:: The url of the avatar 
+  # token:: A unique representation of the avatar record which can be used to set the avatar with the user update endpoint. Note: this is an internal representation and is subject to change without notice. It should be consumed with this api endpoint and used in the user update endpoint, and should not be constructed by the client.
+  # display_name:: A textual description of the avatar record
+  # id:: ['attachment' type only] the internal id of the attachment
+  # content-type:: ['attachment' type only] the content-type of the attachment
+  # filename:: ['attachment' type only] the filename of the attachment
+  # size:: ['attachment' type only] the size of the attachment
+  #
+  # @example_request
+  #
+  #   curl 'http://<canvas>/api/v1/users/1/avatars.json' \ 
+  #        -H "Authorization: Bearer <token>"
+  #
+  # @example_response
+  #
+  #   [
+  #     {
+  #       "type":"gravatar",
+  #       "url":"https://secure.gravatar.com/avatar/2284...",
+  #       "token":<opaque_token>,
+  #       "display_name":"gravatar pic"
+  #     },
+  #     {
+  #       "type":"attachment",
+  #       "url":"https://<canvas>/images/thumbnails/12/gpLWJ...",
+  #       "token":<opaque_token>,
+  #       "display_name":"profile.jpg",
+  #       "id":12,
+  #       "content-type":"image/jpeg",
+  #       "filename":"profile.jpg",
+  #       "size":32649
+  #     },
+  #     {
+  #       "type":"no_pic",
+  #       "url":"https://<canvas>/images/dotted_pic.png",
+  #       "token":<opaque_token>,
+  #       "display_name":"no pic"
+  #     }
+  #   ]
   def profile_pics
-    @pics = []
-    @user = @current_user
-    if feature_enabled?(:facebook) && facebook = @user.facebook
-      # TODO: add facebook picture if enabled
+    @user = if api_request? then api_find(User, params[:user_id]) else @current_user end
+    if authorized_action(@user, @current_user, :update_avatar)
+      render :json => avatars_json_for_user(@user)
     end
-    if feature_enabled?(:twitter) && twitter = @user.user_services.for_service('twitter').first
-      url = URI.parse("http://twitter.com/users/show.json?user_id=#{twitter.service_user_id}")
-      data = JSON.parse(Net::HTTP.get(url)) rescue nil
-      if data
-        @pics << {
-          :url => data['profile_image_url_https'],
-          :type => 'twitter',
-          :alt => 'twitter pic'
-        }
-      end
-    end
-    if feature_enabled?(:linked_in) && linked_in = @user.user_services.for_service('linked_in').first
-      self.extend LinkedIn
-      profile = linked_in_profile
-      if profile && profile['picture_url']
-        @pics << {
-          :url => profile['picture_url'],
-          :type => 'linked_in',
-          :alt => 'linked_in pic'
-        }
-      end
-    end
-    @pics << {
-      :url => @current_user.gravatar_url(50, "http://#{HostUrl.default_host}/images/dotted_pic.png"),
-      :type => 'gravatar',
-      :alt => 'gravatar pic'
-    }
-    @pics << {
-      :url => '/images/dotted_pic.png',
-      :type => 'none',
-      :alt => 'no pic'
-    }
-    @current_user.profile_pics_folder.active_file_attachments({:include => :thumbnail}).select{|a| a.content_type.match(/\Aimage\//) && a.thumbnail}.sort_by(&:id).reverse.each do |image|
-      @pics << {
-        :url => "/images/thumbnails/#{image.id}/#{image.uuid}",
-        :pending => image.thumbnail.nil?,
-        :type => 'attachment',
-        :alt => image.display_name
-      }
-    end
-    render :json => @pics.to_json
   end
   
   def update
     @user = @current_user
     respond_to do |format|
-      unless @user.user_can_edit_name?
+      if !@user.user_can_edit_name? && params[:user]
         params[:user].delete(:name)
         params[:user].delete(:short_name)
         params[:user].delete(:sortable_name)
@@ -185,8 +193,7 @@ class ProfileController < ApplicationController
       if @user.update_attributes(params[:user])
         pseudonymed = false
         if params[:default_email_id].present?
-          @user.communication_channels.each_with_index{|cc, idx| cc.insert_at(idx + 1) }
-          @email_channel = @user.communication_channels.find_by_id(params[:default_email_id])
+          @email_channel = @user.communication_channels.email.find_by_id(params[:default_email_id])
           @email_channel.move_to_top if @email_channel
         end
         if params[:pseudonym]
@@ -194,10 +201,11 @@ class ProfileController < ApplicationController
           old_password = params[:pseudonym].delete :old_password
           pseudonym_to_update = @user.pseudonyms.find(params[:pseudonym][:password_id]) if params[:pseudonym][:password_id] && change_password
           if change_password == '1' && pseudonym_to_update && !pseudonym_to_update.valid_arbitrary_credentials?(old_password)
+            error_msg = t('errors.invalid_old_passowrd', "Invalid old password for the login %{pseudonym}", :pseudonym => pseudonym_to_update.unique_id)
             pseudonymed = true
-            flash[:error] = t('errors.invalid_old_password', "Invalid old password for the login %{pseudonym}", :pseudonym => pseudonym_to_update.unique_id)
-            format.html { redirect_to profile_url }
-            format.json { render :json => pseudonym_to_update.errors.to_json, :status => :bad_request }
+            flash[:error] = error_msg
+            format.html { redirect_to user_profile_url(@current_user) }
+            format.json { render :json => {:errors => {:old_password => error_msg}}.to_json, :status => :bad_request }
           end
           if change_password != '1' || !pseudonym_to_update || !pseudonym_to_update.valid_arbitrary_credentials?(old_password)
             params[:pseudonym].delete :password
@@ -207,18 +215,13 @@ class ProfileController < ApplicationController
           if !params[:pseudonym].empty? && pseudonym_to_update && !pseudonym_to_update.update_attributes(params[:pseudonym])
             pseudonymed = true
             flash[:error] = t('errors.profile_update_failed', "Login failed to update")
-            format.html { redirect_to profile_url }
+            format.html { redirect_to user_profile_url(@current_user) }
             format.json { render :json => pseudonym_to_update.errors.to_json, :status => :bad_request }
           end
         end
-        if params[:default_communication_channel_id].present?
-          cc = @user.communication_channels.each_with_index{|cc, idx| cc.insert_at(idx + 1) }
-          cc = @user.communication_channels.find_by_id_and_path_type(params[:default_communication_channel_id], 'email')
-          cc.insert_at(1) if cc
-        end
         unless pseudonymed
-          flash[:notice] = t('notices.updated_profile', "Profile successfully updated")
-          format.html { redirect_to profile_url }
+          flash[:notice] = t('notices.updated_profile', "Settings successfully updated")
+          format.html { redirect_to user_profile_url(@current_user) }
           format.json { render :json => @user.to_json(:methods => :avatar_url, :include => {:communication_channel => {:only => [:id, :path]}, :pseudonym => {:only => [:id, :unique_id]} }) }
         end
       else
@@ -227,4 +230,59 @@ class ProfileController < ApplicationController
       end
     end
   end
+
+  # TODO: the current update method needs to get moved to the UsersController
+  # (since it is not concerned with profiles), then this should get renamed
+  #
+  # not doing API docs until we can move this to PUT /profile
+  def update_profile
+    @user = @current_user
+    @profile = @user.profile
+    @context = @profile
+
+    short_name = params[:user] && params[:user][:short_name]
+    @user.short_name = short_name if short_name
+    @profile.attributes = params[:user_profile]
+
+    if params[:link_urls] && params[:link_titles]
+      links = params[:link_urls].zip(params[:link_titles]).
+        reject { |url, title| url.blank? && title.blank? }.
+        map { |url, title|
+          UserProfileLink.new :url => url, :title => title
+        }
+      @profile.links = links
+    end
+
+    if @user.valid? && @profile.valid?
+      @user.save!
+      @profile.save!
+
+      if params[:user_services]
+        visible, invisible = params[:user_services].partition { |service,bool|
+          value_to_boolean(bool)
+        }
+        @user.user_services.update_all("visible = TRUE", :service => visible.map(&:first))
+        @user.user_services.update_all("visible = FALSE", :service => invisible.map(&:first))
+      end
+
+      respond_to do |format|
+        format.html { redirect_to user_profile_path(@user) }
+        format.json { render :json => user_profile_json(@user.profile, @current_user, session, params[:includes]) }
+      end
+    else
+      respond_to do |format|
+        format.html { redirect_to user_profile_path(@user) } # FIXME: need to go to edit path
+        format.json { render :json => 'TODO' }
+      end
+    end
+  end
+
+  def require_user_for_private_profile
+    if params[:id]
+      @user = User.find(params[:id])
+      return if @user.public?
+    end
+    require_user
+  end
+  private :require_user_for_private_profile
 end

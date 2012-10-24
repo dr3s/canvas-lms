@@ -28,7 +28,8 @@ class Rubric < ActiveRecord::Base
   before_save :default_values
   after_save :update_outcome_tags
   validates_length_of :description, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
-  
+  validates_length_of :title, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
+
   serialize :data
   simply_versioned
   
@@ -55,6 +56,7 @@ class Rubric < ActiveRecord::Base
     given {|user, session| self.cached_context_grants_right?(user, session, :manage)}
     can :read and can :create and can :delete_associations
     
+    # read_only means "associated with > 1 object for grading purposes"
     given {|user, session| !self.read_only && self.rubric_associations.for_grading.length < 2 && self.cached_context_grants_right?(user, session, :manage_assignments)}
     can :update and can :delete
     
@@ -79,7 +81,15 @@ class Rubric < ActiveRecord::Base
   def default_values
     original_title = self.title
     cnt = 0
-    while Rubric.find(:first, :conditions => ['context_id = ? AND context_type = ? AND id != ? AND title = ?', self.context_id, self.context_type, self.id, self.title])
+
+    loop do
+      dup_title = if new_record?
+                    Rubric.first :conditions => ["title = ? AND context_id = ? AND context_type = ? AND workflow_state != 'deleted'", self.title, self.context_id, self.context_type]
+                  else
+                    Rubric.first :conditions => ["title = ? AND context_id = ? AND context_type = ? AND id != ? AND workflow_state != 'deleted'", self.title, self.context_id, self.context_type, self.id]
+                  end
+      break unless dup_title
+
       cnt += 1
       self.title = "#{original_title} (#{cnt})"
     end
@@ -199,7 +209,7 @@ class Rubric < ActiveRecord::Base
   end
   
   def will_change_with_update?(params)
-    return true if params[:free_form_criterion_comments] && self.free_form_criterion_comments != (params[:free_form_criterion_comments] == '1')
+    return true if params[:free_form_criterion_comments] && !!self.free_form_criterion_comments != (params[:free_form_criterion_comments] == '1')
     data = generate_criteria(params)
     return true if data.title != self.title || data.points_possible != self.points_possible
     return true if data.criteria != self.criteria
@@ -215,7 +225,7 @@ class Rubric < ActiveRecord::Base
       criterion = {}
       criterion[:description] = (criterion_data[:description] || t('no_description', "No Description")).strip
       criterion[:long_description] = (criterion_data[:long_description] || "").strip
-      criterion[:points] = criterion_data[:points].to_i || 0
+      criterion[:points] = criterion_data[:points].to_f || 0
       criterion_data[:id].strip! if criterion_data[:id]
       criterion_data[:id] = nil if criterion_data[:id] && criterion_data[:id].empty?
       criterion[:id] = unique_item_id(criterion_data[:id])
@@ -230,11 +240,11 @@ class Rubric < ActiveRecord::Base
           criterion[:ignore_for_scoring] = criterion_data[:ignore_for_scoring] == '1'
         end
       end
-      (criterion_data[:ratings] || []).each do |jdx, rating_data|
+      (criterion_data[:ratings] || {}).each do |jdx, rating_data|
         rating = {}
         rating[:description] = (rating_data[:description] || t('no_description', "No Description")).strip
         rating[:long_description] = (rating_data[:long_description] || "").strip
-        rating[:points] = rating_data[:points].to_i || 0
+        rating[:points] = rating_data[:points].to_f || 0
         rating[:criterion_id] = criterion[:id]
         rating_data[:id].strip! if rating_data[:id]
         rating[:id] = unique_item_id(rating_data[:id])
@@ -255,9 +265,8 @@ class Rubric < ActiveRecord::Base
 
   def self.process_migration(data, migration)
     rubrics = data['rubrics'] ? data['rubrics']: []
-    to_import = migration.to_import 'rubrics'
     rubrics.each do |rubric|
-      if rubric['migration_id'] && (!to_import || to_import[rubric['migration_id']])
+      if migration.import_object?("rubrics", rubric['migration_id'])
         begin
           import_from_migration(rubric, migration.context)
         rescue
@@ -274,6 +283,7 @@ class Rubric < ActiveRecord::Base
     item ||= find_by_context_id_and_context_type_and_migration_id(context.id, context.class.to_s, hash[:migration_id]) if hash[:migration_id]
     item ||= self.new(:context => context)
     item.migration_id = hash[:migration_id]
+    item.workflow_state = 'active' if item.deleted?
     item.title = hash[:title]
     item.description = hash[:description]
     item.points_possible = hash[:points_possible].to_f

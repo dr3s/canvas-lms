@@ -1,4 +1,8 @@
-I18n.scoped('quizzes.rubric', function(I18n) {
+define([
+  'i18n!quizzes.rubric',
+  'jquery' /* $ */,
+  'jqueryui/dialog'
+], function(I18n, $) {
 
 $(document).ready(function() {
   $(".show_rubric_link").click(function(event) {
@@ -24,13 +28,12 @@ $(document).ready(function() {
     }
     function ready() {
       $dialog = $("#rubrics.rubric_dialog");
-      $dialog.dialog('close').dialog({
+      $dialog.dialog({
         title: I18n.t('titles.details', "Assignment Rubric Details"),
         width: 600,
         modal: false,
-        resizable: true,
-        autoOpen: false
-      }).dialog('open');
+        resizable: true
+      });
     }
   });
 });

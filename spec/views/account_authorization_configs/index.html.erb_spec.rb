@@ -27,7 +27,41 @@ describe "account_authorization_configs/index" do
                                   Account.default.account_authorization_configs.build ]
     assigns[:current_user] = user_model
     assigns[:saml_identifiers] = []
+    assigns[:saml_authn_contexts] = []
+    assigns[:saml_login_attributes] = {}
     render 'account_authorization_configs/index'
     response.body.should match("192.168.0.1\n192.168.0.2")
+  end
+
+  it "should display the last_timeout_failure" do
+    assigns[:context] = assigns[:account] = Account.default
+    assigns[:account_configs] = [ factory_with_protected_attributes(Account.default.account_authorization_configs, :last_timeout_failure => 1.minute.ago),
+                                  Account.default.account_authorization_configs.build ]
+    assigns[:current_user] = user_model
+    assigns[:saml_identifiers] = []
+    assigns[:saml_authn_contexts] = []
+    assigns[:saml_login_attributes] = {}
+    render 'account_authorization_configs/index'
+    doc = Nokogiri::HTML(response.body)
+    doc.at_css('form.ldap_form:nth(1) tr.last_timeout_failure').should be_present
+    doc.at_css('form.ldap_form:nth(2) tr.last_timeout_failure').should_not be_present
+  end
+
+  it "should display more than 2 LDAP configs" do
+    assigns[:context] = assigns[:account] = Account.default
+    4.times do
+      Account.default.account_authorization_configs.create!(:auth_type => 'ldap')
+    end
+    assigns[:account_configs] = Account.default.account_authorization_configs.to_a
+    assigns[:current_user] = user_model
+    assigns[:saml_identifiers] = []
+    assigns[:saml_authn_contexts] = []
+    assigns[:saml_login_attributes] = {}
+
+    render 'account_authorization_configs/index'
+    doc = Nokogiri::HTML(response.body)
+    doc.css('.ldap_secondary').length.should == 3
+    # we go in to a degenerate mode that users can't add/remove individual configs
+    doc.css('.remove_secondary_ldap_link').length.should == 0
   end
 end

@@ -60,16 +60,24 @@ def api_call(method, path, params, body_params = {}, headers = {}, opts = {})
   end
 end
 
+# like api_call, but performed by the specified user instead of @user
+def api_call_as_user(user, method, path, params, body_params = {}, headers = {}, opts = {})
+  token = user.access_tokens.first || user.access_tokens.create!(:purpose => 'test')
+  headers['Authorization'] = "Bearer #{token.token}"
+  user.pseudonyms.create!(:unique_id => "#{user.id}@example.com", :account => opts[:domain_root_account]) unless user.pseudonym(true)
+  api_call(method, path, params, body_params, headers, opts)
+end
+
 # like api_call, but don't assume success and a json response.
 def raw_api_call(method, path, params, body_params = {}, headers = {}, opts = {})
   path = path.sub(%r{\Ahttps?://[^/]+}, '') # remove protocol+host
   enable_forgery_protection do
     params_from_with_nesting(method, path).should == params
 
-    if !params.key?(:api_key) && !params.key?(:access_token) && @user
+    if !params.key?(:api_key) && !params.key?(:access_token) && !headers.key?('Authorization') && @user
       token = @user.access_tokens.first
       token ||= @user.access_tokens.create!(:purpose => 'test')
-      params[:access_token] = token.token
+      headers['Authorization'] = "Bearer #{token.token}"
       @user.pseudonyms.create!(:unique_id => "#{@user.id}@example.com", :account => opts[:domain_root_account]) unless @user.pseudonym(true)
     end
 
@@ -98,6 +106,7 @@ def should_translate_user_content(course)
       Hello, students.<br>
       This will explain everything: <img src="/courses/#{course.id}/files/#{attachment.id}/preview" alt="important">
       Also, watch this awesome video: <a href="/media_objects/qwerty" class="instructure_inline_media_comment video_comment" id="media_comment_qwerty"><img></a>
+      And refer to this <a href="/courses/#{course.id}/wiki/awesome-page">awesome wiki page</a>.
     </p>
   }
   html = yield content
@@ -109,5 +118,7 @@ def should_translate_user_content(course)
   video.should be_present
   video['poster'].should match(%r{http://www.example.com/media_objects/qwerty/thumbnail})
   video['src'].should match(%r{http://www.example.com/courses/#{course.id}/media_download})
-    video['src'].should match(%r{entryId=qwerty})
+  video['src'].should match(%r{entryId=qwerty})
+  doc.css('a').last['data-api-endpoint'].should match(%r{http://www.example.com/api/v1/courses/#{course.id}/pages/awesome-page})
+  doc.css('a').last['data-api-returntype'].should == 'Page'
 end

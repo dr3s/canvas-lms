@@ -90,10 +90,23 @@ module CC
         c.course_code @course.course_code
         c.start_at ims_datetime(@course.start_at) if @course.start_at
         c.conclude_at ims_datetime(@course.conclude_at) if @course.conclude_at
+        if for_course_copy
+          c.tab_configuration @course.tab_configuration.to_json if @course.tab_configuration.present?
+        end
         atts = Course.clonable_attributes
         atts -= Canvas::Migration::MigratorHelper::COURSE_NO_COPY_ATTS
+        atts << :grading_standard_enabled
+        atts << :storage_quota
         atts.each do |att|
           c.tag!(att, @course.send(att)) unless @course.send(att).nil? || @course.send(att) == ''
+        end
+        c.hide_final_grade @course.settings[:hide_final_grade] unless @course.settings[:hide_final_grade].nil?
+        if @course.grading_standard
+          if @course.grading_standard.context_type == "Account"
+            c.grading_standard_id @course.grading_standard.id
+          else
+            c.grading_standard_identifier_ref create_key(@course.grading_standard)
+          end
         end
       end
       course_file.close if course_file

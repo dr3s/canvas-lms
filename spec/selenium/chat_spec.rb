@@ -5,10 +5,9 @@ describe "chat" do
 
   it "should render on the page correctly" do
     course_with_teacher_logged_in
-    Tinychat.instance_variable_set('@config', {})
+    PluginSetting.create!(:name => "tinychat", :settings => {})
     get "/courses/#{@course.id}/chat"
-    driver.find_element(:css, ".tinychat_embed iframe").should be_displayed
+    keep_trying_until { f(".tinychat_embed iframe").should be_displayed }
   end
-  
 end
 

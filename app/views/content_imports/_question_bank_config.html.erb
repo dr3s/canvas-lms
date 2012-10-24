@@ -35,6 +35,11 @@
 
 <% js_block do %>
 <script>
+require([
+  'jquery' /* $ */,
+  'jqueryui/dialog'
+], function($) {
+
 $("#question_bank_select").change(function() {
   if($(this).val() == 'new_question_bank') {
     $('#new_question_bank').show();
@@ -44,10 +49,11 @@ $("#question_bank_select").change(function() {
 });
 $(".overwrite_questions_description_link").click(function(event) {
   event.preventDefault();
-  $('#overwrite_questions_description').dialog('close').dialog({
+  $('#overwrite_questions_description').dialog({
     title: 'Overwrite Assessment Data',
     width: 500
   });
+});
 });
 </script>
 <% end %>

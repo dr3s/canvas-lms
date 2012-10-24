@@ -16,8 +16,37 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-var grading_scheme, readOnlyGradebook, gradebook;
-I18n.scoped('gradebook', function(I18n) {
+define([
+  'INST' /* INST */,
+  'i18n!gradebook',
+  'jquery' /* $ */,
+  'underscore',
+  'compiled/userSettings',
+  'datagrid',
+  'compiled/grade_calculator',
+  'str/htmlEscape',
+  'compiled/gradebook2/Turnitin',
+  'jquery.ajaxJSON' /* ajaxJSONFiles, ajaxJSON */,
+  'jquery.dropdownList' /* dropdownList */,
+  'jquery.instructure_date_and_time' /* parseFromISO */,
+  'jquery.instructure_forms' /* formSubmit, getFormData, formErrors, errorBox */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags, /\$\.size/ */,
+  'jquery.instructure_misc_plugins' /* fragmentChange, showIf */,
+  'jquery.keycodes' /* keycodes */,
+  'jquery.loadingImg' /* loadingImg, loadingImage */,
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'message_students' /* messageStudents */,
+  'vendor/date' /* Date.parse */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'jqueryui/position' /* /\.position\(/ */,
+  'jqueryui/progressbar' /* /\.progressbar/ */
+], function(INST, I18n, $, _, userSettings, datagrid, GradeCalculator, htmlEscape, Turnitin) {
+
+  var grading_scheme = window.grading_scheme;
+  var readOnlyGradebook = window.readOnlyGradebook;
+  var gradebook = window.gradebook;
+
   var $loading_gradebook_progressbar = $("#loading_gradebook_progressbar"),
       $default_grade_form = $("#default_grade_form"),
       $assignment_details_dialog = $("#assignment_details_dialog"),
@@ -39,8 +68,8 @@ I18n.scoped('gradebook', function(I18n) {
   var possibleSections = {},
       $courseSections  = $(".outer_student_name .course_section"),
       contextId = $("#current_context_code").text().split("_")[1],
-      sectionToShow = $.store.userGet("grading_show_only_section" + contextId);
-      
+      sectionToShow = userSettings.contextGet('grading_show_only_section');
+
   $courseSections.each(function(){
     possibleSections[$(this).data('course_section_id')] = $(this).attr('title'); 
   }); 
@@ -57,8 +86,9 @@ I18n.scoped('gradebook', function(I18n) {
       }
     });
     
-    $courseSections.add('.gradebook_table .course_section').each(function() {
-      if ($(this).data('course_section_id') != sectionToShow){
+    $('.outer_student_name .course_sections, .gradebook_table .course_sections').each(function() {
+      var section_ids = $(this).data('course_section_ids').toString().split(",");
+      if (section_ids.indexOf(sectionToShow) == -1) {
         $(this).closest('tr').remove();
       } else {
         var studentId = $(this).closest('.student_header').attr('id');
@@ -71,7 +101,7 @@ I18n.scoped('gradebook', function(I18n) {
     });
     if (!atLeastOnePersonExistsInThisSection) {
       alert(I18n.t('alerts.no_students_in_section', "Could not find any students in that section, falling back to showing all sections."));
-      $.store.userRemove("grading_show_only_section"+contextId);
+      userSettings.contextRemove('grading_show_only_section');
       window.location.reload();
     }
   }
@@ -178,7 +208,7 @@ I18n.scoped('gradebook', function(I18n) {
               showTooltip(I18n.t('tooltips.submission_dropped', 'This submission is dropped for grading purposes'));
             } else if(datagrid.columns[grid.cell.column].hidden) {
               var name = objectData(datagrid.cells['0,' + grid.cell.column]).title;
-              showTooltip($.htmlEscape(name) + "<br/><span style='font-size: 0.9em;'>" + I18n.t('click_to_expand', "Click to expand") + "</span>", true)
+              showTooltip(htmlEscape(name) + "<br/><span style='font-size: 0.9em;'>" + I18n.t('click_to_expand', "Click to expand") + "</span>", true)
             }
           } else if(event && event.originalEvent && event.originalEvent.type && !event.originalEvent.type.match(/mouse/)) {
             grid.cell.find(".grade").focus().css('outline', 0);
@@ -399,10 +429,9 @@ I18n.scoped('gradebook', function(I18n) {
               $assignment_details_dialog.fillTemplateData({
                   data: data
                 })
-                .dialog('close').dialog({
-                  autoOpen: false,
+                .dialog({
                   title: I18n.beforeLabel('details', "Details") + " " + data.title
-                }).dialog('open')
+                })
                 .find(".assignment_link").attr('href', data.url);
             });
           }
@@ -518,24 +547,36 @@ I18n.scoped('gradebook', function(I18n) {
                 for(var idx in students_hash) {
                   students.push(students_hash[idx]);
                 }
+
+                var hasSubmission = true;
+                if (!data.submission_types || data.submission_types.match(/none|on_paper/)) {
+                  hasSubmission = false;
+                }
+                var options = [
+                  {text: I18n.t('students_who.havent_submitted_yet', "Haven't submitted yet")},
+                  {text: I18n.t("students_who.havent_been_graded", "Haven't been graded")},
+                  {text: I18n.t('students_who.scored_less_than', "Scored less than"), cutoff: true},
+                  {text: I18n.t('students_who.scored_more_than', "Scored more than"), cutoff: true}
+                ];
+                if (!hasSubmission) {
+                  options.splice(0, 1)
+                }
                 
                 window.messageStudents({
-                  options: [
-                    {text: I18n.t('students_who.havent_submitted_yet', "Haven't submitted yet")},
-                    {text: I18n.t('students_who.scored_less_than', "Scored less than"), cutoff: true},
-                    {text: I18n.t('students_who.scored_more_than', "Scored more than"), cutoff: true}
-                  ],
+                  options: options,
                   title: title,
                   points_possible: data.points_possible,
                   students: students,
                   callback: function(selected, cutoff, students) {
                     students = $.grep(students, function($student, idx) {
                       var student = $student.user_data;
-                      if(selected == I18n.t('not_submitted_yet', "Haven't submitted yet")) {
+                      if(selected == I18n.t('students_who.not_submitted_yet', "Haven't submitted yet")) {
                         return !student.submitted_at;
-                      } else if(selected == I18n.t('scored_less_than', "Scored less than")) {
+                      } else if (selected == I18n.t("students_who.havent_been_graded", "Haven't been graded")) {
+                        return student.score === null;
+                      } else if(selected == I18n.t('students_who.scored_less_than', "Scored less than")) {
                         return student.score != null && student.score !== "" && cutoff != null && student.score < cutoff;
-                      } else if(selected == I18n.t('scored_more_than', "Scored more than")) {
+                      } else if(selected == I18n.t('students_who.scored_more_than', "Scored more than")) {
                         return student.score != null && student.score !== "" && cutoff != null && student.score > cutoff;
                       }
                     });
@@ -558,14 +599,13 @@ I18n.scoped('gradebook', function(I18n) {
                 if(!$box.hasClass('grading_value')) { $input = $box.find(".grading_value"); }
                 $input.attr('name', 'default_grade').show();
                 $default_grade_form.find(".grading_box_holder").empty().append($box);
-                $default_grade_form.dialog('close').dialog({
-                  autoOpen: false,
+                $default_grade_form.dialog({
                   width: 350,
                   height: "auto",
                   open: function() {
                     $default_grade_form.find(".grading_box").focus();
                   }
-                }).dialog('open').dialog('option', 'title', I18n.t('default_grade_for_course', "Default Grade for %{assignment}", {'assignment': title}));
+                }).dialog('option', 'title', I18n.t('default_grade_for_course', "Default Grade for %{assignment}", {'assignment': title}));
               });
               if(columnData.grading_type != 'pass_fail' && columnData.points_possible) {
                 addOption('check', I18n.t('curve_grades', 'Curve Grades'), function() {
@@ -577,15 +617,13 @@ I18n.scoped('gradebook', function(I18n) {
                     .find(".out_of").showIf(data.points_possible || data.points_possible === '0').end()
                     .find("#middle_score").val(parseInt((data.points_possible || 0) * 0.6, 10)).end()
                     .find(".points_possible").text(data.points_possible).end()
-                    .dialog('close').dialog({
-                      autoOpen: false,
+                    .dialog({
                       width: 350,
                       height: "auto",
                       open: function() {
                         gradebook.curve();
                       }
-                    })
-                    .dialog('open').dialog('option', 'title', I18n.t('curve_grade_for_course', "Curve Grade for %{assignment}", {'assignment': title}));
+                    }).dialog('option', 'title', I18n.t('curve_grade_for_course', "Curve Grade for %{assignment}", {'assignment': title}));
                 });
               }
             }
@@ -605,11 +643,10 @@ I18n.scoped('gradebook', function(I18n) {
                 var url = $("#re_upload_submissions_form").find(".re_upload_submissions_url").attr('href');
                 url = $.replaceTags(url, "assignment_id", data.assignment_id);
                 $("#re_upload_submissions_form").attr('action', url);
-                $("#re_upload_submissions_form").dialog('close').dialog({
-                  autoOpen: false,
+                $("#re_upload_submissions_form").dialog({
                   title: I18n.t('reupload_submission_files', "Re-Upload Submission Files"),
                   width: 350
-                }).dialog('open');
+                });
               });
             }
           }
@@ -619,7 +656,7 @@ I18n.scoped('gradebook', function(I18n) {
         });
         if($td.hasClass('group_total')) {
           var type = $td.find(".assignment_title").text();
-          addOption('carat-1-w', $.htmlEscape(I18n.t('hide_all_things', 'Hide All %{things}', {'things': type})), function() {
+          addOption('carat-1-w', htmlEscape(I18n.t('hide_all_things', 'Hide All %{things}', {'things': type})), function() {
             var check_id = objectData($td).assignment_group_id;
             $(".outer_assignment_name").each(function() {
               var assignment = objectData($(this));
@@ -764,6 +801,7 @@ I18n.scoped('gradebook', function(I18n) {
       };
       var templateHTML = $("#gradebook_entry_template").html();
       datagrid.init($("#gradebook_table"), {
+        paddingBottom: $("#fixed_bottom").height(),
         templateCellHTML: function(row, col) {
           var user_id = id_maps["row_" + row],
               assignment_id = id_maps["column_" + col],
@@ -779,7 +817,7 @@ I18n.scoped('gradebook', function(I18n) {
           object_data.grid = true;
           $(document).fragmentChange(fragmentCallback);
           $(document).fragmentChange();
-          var columns = $.grep(($.store.userGet('hidden_columns_' + context_code) || '').split(/,/), function(e) { return e; });
+          var columns = $.grep((userSettings.contextGet('hidden_columns') || []), function(e) { return e; });
           var columns_to_hide = [];
           
           if(columns.length) {
@@ -787,7 +825,7 @@ I18n.scoped('gradebook', function(I18n) {
               columns_to_hide.push(this);
             });
           }
-          if($.store.userGet('show_attendance_' + context_code) != 'true') {
+          if (!userSettings.contextGet('show_attendance')) {
             $(".cell.assignment_name.attendance").each(function() {
               columns_to_hide.push(this);
             });
@@ -843,12 +881,14 @@ I18n.scoped('gradebook', function(I18n) {
         toggle: function(column, show) {
           var $cell = datagrid.cells[0 + ',' + column];
           var id = $cell.children('.assignment_header').attr('id');
-          var columns = $.grep(($.store.userGet('hidden_columns_' + context_code) || '').split(/,/), function(e) { return e && (!show || e != id); });
+          var columns = $.grep((userSettings.contextGet('hidden_columns') || []), function(e) {
+            return e && (!show || e != id);
+          });
           if(!show) {
             columns.push(id);
           }
           columns = $.uniq(columns);
-          $.store.userSet('hidden_columns_' + context_code, columns.join(','));
+          userSettings.contextSet('hidden_columns', columns);
         }
       });
     };
@@ -921,7 +961,7 @@ I18n.scoped('gradebook', function(I18n) {
             }
             object_data.student_submissions_count = object_data.student_submissions_count || 0;
             object_data.student_submissions_count = object_data.student_submissions_count + (clump_size || 1);
-            user_ids = $.uniq(user_ids);
+            user_ids = _.uniq(user_ids);
             for(var idx in user_ids) {
               $(".table_entry.student_" + user_ids[idx]).css('visibility', '');
             }
@@ -1091,7 +1131,15 @@ I18n.scoped('gradebook', function(I18n) {
             cnt++;
           }
           if(cnt === 0) {
-            $curve_grade_dialog.errorBox(I18n.t('errors.none_to_update', 'None to Update'));
+            var errorBox = $curve_grade_dialog.errorBox(
+              I18n.t('errors.none_to_update', 'None to Update'));
+
+            setTimeout(function() {
+              errorBox.fadeOut(function() {
+                errorBox.remove();
+              });
+            }, 3500);
+
             return false;
           }
           return data;
@@ -1131,29 +1179,27 @@ I18n.scoped('gradebook', function(I18n) {
         $(".sort_gradebook").each(function() {
           $(this).attr('disabled', false).text($(this).attr('title'));
         });
-        $("#sort_columns_dialog").dialog('close').dialog({
+        $("#sort_columns_dialog").dialog({
           autoOpen: false,
           width: 400,
           height: 300
-        }).dialog('open');
+        });
       });
 
       addOption('carat-2-n-s', I18n.t('sort_rows_by', 'Sort Rows By...'), function() {
         $(".sort_gradebook").each(function() {
           $(this).attr('disabled', false).text($(this).attr('title'));
         });
-        $("#sort_rows_dialog").dialog('close').dialog({
-          autoOpen: false,
+        $("#sort_rows_dialog").dialog({
           width: 400,
           height: 300
-        }).dialog('open');
+        });
       });
 
       addOption('pencil', I18n.t('set_group_weights', 'Set Group Weights'), function() {
-        $("#groups_data").dialog('close').dialog({
-          title: I18n.t('titles.assignment_groups', "Assignment Groups"),
-          autoOpen: false
-        }).dialog('open').show();
+        $("#groups_data").dialog({
+          title: I18n.t('titles.assignment_groups', "Assignment Groups")
+        }).show();
       });
 
       addOption('clock', I18n.t('view_grading_history', 'View Grading History'), function() {
@@ -1188,7 +1234,7 @@ I18n.scoped('gradebook', function(I18n) {
       });
       
       // handle showing only one section
-      if ($.size(possibleSections) > 1) {  
+      if (_.size(possibleSections) > 1) {
         var sectionToShowLabel = sectionToShow ? 
           I18n.t('showing_section', 'Showing Section: %{section}', {'section': possibleSections[sectionToShow]}) : 
           I18n.t('showing_all_sections', 'Showing All Sections');
@@ -1200,7 +1246,7 @@ I18n.scoped('gradebook', function(I18n) {
           };
           dialogData['buttons'][I18n.t('buttons.change_section', 'Change Section')] = function() {
             var val = $("#section_to_show_dialog select").val();
-            $.store[val == "all" ? 'userRemove' : 'userSet']("grading_show_only_section"+contextId, val);
+            userSettings[val == "all" ? 'contextRemove' : 'contextSet']('grading_show_only_section', val);
             window.location.reload();
           };
           var $dialog = $("#section_to_show_dialog").dialog(dialogData);
@@ -1422,37 +1468,7 @@ I18n.scoped('gradebook', function(I18n) {
       $submission_grade.after($("#gradebook_urls .pending_review").clone());
       $submission_pending_review.addClass('showable').showIf(!$submission.find(".grading_value:visible").length);
     }
-    var turnitin_data = null;
-    if(submission.turnitin_data) {
-      if(submission.attachments && submission.submission_type == 'online_upload') {
-        for(var idx in submission.attachments) {
-          var attachment = submission.attachments[idx].attachment;
-          var turnitin = submission.turnitin_data && submission.turnitin_data['attachment_' + attachment.id];
-          if(turnitin) {
-            turnitin_data = turnitin_data || {};
-            turnitin_data.items = turnitin.items || [];
-            turnitin_data.items.push(turnitin);
-          }
-        }
-      } else if(submission.submission_type == "online_text_entry") {
-        var turnitin = submission.turnitin_data && submission.turnitin_data['submission_' + submission.id];
-        if(turnitin) {
-          turnitin_data = turnitin_data || {};
-          turnitin_data.items = turnitin.items || [];
-          turnitin_data.items.push(turnitin);
-        }
-      }
-      if(turnitin_data) {
-        var states_hash = {'failure': 4, 'problem': 3, 'warning': 2, 'acceptable': 1};
-        var states_lookup = {'0': 'none', '1': 'acceptable', '2': 'warning', '3': 'problem', '4': 'failure'};
-        var tally = 0;
-        for(var idx = 0; idx < turnitin_data.items.length; idx++) {
-          tally = tally + states_hash[turnitin_data.items[idx].state];
-        }
-        var avg = tally / turnitin_data.items.length;
-        turnitin_data.state = states_lookup[Math.floor(avg)] || "no";
-      }
-    }
+    var turnitin_data = Turnitin.extractData(submission);
     if(!turnitin_data) {
       $submission_turnitin.remove();
     } else if(!$submission_turnitin.length) { 
@@ -1562,8 +1578,6 @@ I18n.scoped('gradebook', function(I18n) {
     
     url = $.replaceTags(url, 'assignment_id', submission.assignment_id);
     url = $.replaceTags(url, 'user_id', submission.user_id);
-    re = new RegExp('("|%22)' + submission.user_id + '("|%22)');
-    url = url.replace(re, submission.user_id);
     $view.append($("#submission_view_image").clone(true).removeAttr('id'));
     $view.append($(" <a href='" + url + "'>" + I18n.t('links.submission_details', "Submission Details") + "</a>"));
 
@@ -1592,7 +1606,7 @@ I18n.scoped('gradebook', function(I18n) {
               $type.append($link);
             }
             $type.append($("#submission_" + submission.submission_type + "_image").clone().removeAttr('id'));
-            $type.append(" <a href='" + attachment_url + "'>" + $.htmlEscape(I18n.t('links.download_attachment', "Download %{attachment}", {'attachment': attachment.display_name})) + "</a><br/>");
+            $type.append(" <a href='" + attachment_url + "'>" + htmlEscape(I18n.t('links.download_attachment', "Download %{attachment}", {'attachment': attachment.display_name})) + "</a><br/>");
           }
         }
       } else if(submission.submission_type == "online_text_entry") {
@@ -1610,7 +1624,7 @@ I18n.scoped('gradebook', function(I18n) {
         var url = $("#gradebook_urls .view_online_text_entry_url").attr('href');
         url = $.replaceTags(url, "assignment_id", submission.assignment_id);
         url = $.replaceTags(url, "user_id", submission.user_id);
-        $type.append(" <a href='" + url + "' target='_new'>" + I18n.t('links.view_submission', "View Submission") + "</a>");
+        $type.append(" <a href='" + url + "' target='_new' class='view_submission_link'>" + I18n.t('links.view_submission', "View Submission") + "</a>");
       }
     } else if(submission.quiz_submission) {
       var url = $("#gradebook_urls .view_quiz_url").attr('href');
@@ -1623,22 +1637,6 @@ I18n.scoped('gradebook', function(I18n) {
         $type.append($("#submission_quiz_image").clone().removeAttr('id'));
         $type.append(" <a href='" + url + "' target='_new'>" + I18n.t('links.view_quiz', "View this Quiz") + "</a>");
       }
-    } else if(submission.submission_type == "online_text_entry") {
-      var url = $("#gradebook_urls .view_online_text_entry_url").attr('href');
-      url = $.replaceTags(url, "assignment_id", submission.assignment_id);
-      url = $.replaceTags(url, "user_id", submission.user_id);
-      var turnitin = submission.turnitin_data && submission.turnitin_data['submission_' + submission.id];
-      if(turnitin) {
-        var turnitin_url = $.replaceTags($.replaceTags($.replaceTags($(".turnitin_report_url").attr('href'), 'user_id', submission.user_id), 'asset_string', 'submission_' + submission.id), 'assignment_id', submission.assignment_id);
-        var $link = $("<a/>");
-        $link.attr('href', turnitin_url).addClass('turnitin_similarity_score').addClass(((turnitin && turnitin.state) || 'no') + '_score');
-        $link.attr('title', I18n.t('titles.turnitin_score', 'Turnitin similarity score -- more information'));
-        $link.attr('target', '_blank');
-        $link.text(turnitin.similarity_score + "%");
-        $type.append($link);
-      }
-      $type.append($("#submission_" + submission.submission_type + "_image").clone().removeAttr('id'));
-      $type.append(" <a href='" + url + "' target='_new'>" + I18n.t('links.view_submission', "View Submission") + "</a>");
     }
 
     $submission_information
@@ -1652,7 +1650,7 @@ I18n.scoped('gradebook', function(I18n) {
       .find(".submission_comments").empty().end()
       .find(".comment_attachments").empty().end()
       .find(".save_buttons,.add_comment").showIf(!readOnlyGradebook).end()
-      .find(".group_comment").showIf(assignment && assignment.group_category).find(":checkbox").attr('checked', true).end().end();
+      .find(".group_comment").showIf(assignment && assignment.group_category).find(":checkbox").attr('checked', false).end().end();
 
     if(readOnlyGradebook) {
       $submission_information.find(".grade_entry").text(grade || "-");
@@ -1691,7 +1689,7 @@ I18n.scoped('gradebook', function(I18n) {
       }
       $submission_information.find(".submission_comments").append($comment.show());
     }
-    $submission_information.show().dialog('close').dialog({
+    $submission_information.show().dialog({
       width: 500,
       height: "auto",
       title: title, 
@@ -1700,9 +1698,8 @@ I18n.scoped('gradebook', function(I18n) {
         $("#gradebook").data('disable_highlight', true);
       }, close: function() {
         $("#gradebook").data('disable_highlight', false);
-      },
-      autoOpen: false
-    }).dialog('open').dialog('option', 'title', title);
+      }
+    }).dialog('option', 'title', title);
   }
 
   function submissionInformation($submission) {
@@ -1711,10 +1708,9 @@ I18n.scoped('gradebook', function(I18n) {
     if(submission && submission.submission_comments) {
       populateSubmissionInformation($submission, submission);
     } else {
-      $("#loading_submission_details_dialog").dialog('close').dialog({
-        autoOpen: false,
+      $("#loading_submission_details_dialog").dialog({
         title: I18n.t('titles.loading', "Loading...")
-      }).dialog('open');
+      });
       var url = $("#loading_submission_details_dialog .submission_details_url").attr('href');
       url = $.replaceTags($.replaceTags(url, 'user_id', submission.user_id), 'assignment_id', submission.assignment_id);
       // Pop up dialog with loading message
@@ -2123,7 +2119,7 @@ I18n.scoped('gradebook', function(I18n) {
     }
     var letterGrade = "";
     if(grading_scheme) {
-      letterGrade = INST.GradeCalculator.letter_grade(grading_scheme, finalGrade);
+      letterGrade = GradeCalculator.letter_grade(grading_scheme, finalGrade);
     }
     $("#submission_" + student_id + "_final-grade")
       .css('visibility', '')

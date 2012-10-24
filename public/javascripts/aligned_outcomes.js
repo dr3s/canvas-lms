@@ -16,7 +16,16 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-I18n.scoped('shared.aligned_outcomes', function(I18n) {
+define([
+  'i18n!shared.aligned_outcomes',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* showIf */,
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function(I18n, $) {
+
 $(document).ready(function() {
   var url = $("#aligned_outcomes .outcomes_url").attr('href');
   var updateOutcomesList = function(data) {
@@ -76,11 +85,10 @@ $(document).ready(function() {
     });
     $("#align_outcomes_dialog .outcome_checkbox").each(function() { $(this).change(); });
     $("#aligned_outcomes_mastery_score").val(mastery);
-    $("#align_outcomes_dialog").dialog('close').dialog({
-      autoOpen: false,
+    $("#align_outcomes_dialog").dialog({
       title: I18n.t('buttons.align_outcomes', 'Align Outcomes'),
       width: 500
-    }).dialog('open');
+    });
   });
   $("#align_outcomes_dialog .cancel_button").click(function() {
     $("#align_outcomes_dialog").dialog('close');

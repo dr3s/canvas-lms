@@ -24,11 +24,11 @@ class SisImportsApiController < ApplicationController
   before_filter :check_account
 
   def check_account
-    raise "SIS imports can only be executed on root accounts" if @account.root_account_id
+    raise "SIS imports can only be executed on root accounts" unless @account.root_account?
     raise "SIS imports can only be executed on enabled accounts" unless @account.allow_sis_import
   end
 
-  # @API
+  # @API Import SIS data
   #
   # Import SIS data into Canvas. Must be on a root account with SIS imports
   # enabled.
@@ -49,22 +49,29 @@ class SisImportsApiController < ApplicationController
   #   be SIS data from a file upload form field named 'attachment'.
   #
   #   Examples:
-  #     curl -F attachment=@<filename> -u '<username>:<password>' \ 
-  #         'http://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?api_key=<key>&import_type=instructure_csv'
+  #     curl -F attachment=@<filename> -H "Authorization: Bearer <token>" \ 
+  #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv'
   #
   #   If you decide to do a raw post, you can skip the 'attachment' argument,
   #   but you will then be required to provide a suitable Content-Type header.
   #   You are encouraged to also provide the 'extension' argument.
   #
   #   Examples:
-  #     curl -H 'Content-Type: application/octet-stream' --data-binary @<filename>.zip -u '<username>:<password>' \ 
-  #         'http://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?api_key=<key>&import_type=instructure_csv&extension=zip'
-  #     curl -H 'Content-Type: application/zip' --data-binary @<filename>.zip -u '<username>:<password>' \ 
-  #         'http://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?api_key=<key>&import_type=instructure_csv'
-  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv -u '<username>:<password>' \ 
-  #         'http://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?api_key=<key>&import_type=instructure_csv'
-  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv -u '<username>:<password>' \ 
-  #         'http://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?api_key=<key>&import_type=instructure_csv&batch_mode=1&batch_mode_term_id=15'
+  #     curl -H 'Content-Type: application/octet-stream' --data-binary @<filename>.zip \ 
+  #         -H "Authorization: Bearer <token>" \ 
+  #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv&extension=zip'
+  #
+  #     curl -H 'Content-Type: application/zip' --data-binary @<filename>.zip \ 
+  #         -H "Authorization: Bearer <token>" \ 
+  #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv'
+  #
+  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv \ 
+  #         -H "Authorization: Bearer <token>" \ 
+  #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv'
+  #
+  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv \ 
+  #         -H "Authorization: Bearer <token>" \ 
+  #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv&batch_mode=1&batch_mode_term_id=15'
   #
   # @argument extension Recommended for raw post request style imports. This
   #   field will be used to distinguish between zip, xml, csv, and other file
@@ -73,7 +80,7 @@ class SisImportsApiController < ApplicationController
   #   inferred from the Content-Type, falling back to zip-file format if all
   #   else fails.
   #
-  # @argument batch_mode ["1"] If set, this SIS import will be run in batch mode, deleting any data previously imported via SIS that is not present in this latest import.  See the PDF document for details.
+  # @argument batch_mode ["1"] If set, this SIS import will be run in batch mode, deleting any data previously imported via SIS that is not present in this latest import.  See the SIS CSV Format page for details.
   #
   # @argument batch_mode_term_id Limit deletions to only this term, if batch
   #   mode is enabled.
@@ -84,9 +91,15 @@ class SisImportsApiController < ApplicationController
   #
   # @argument clear_sis_stickiness ["1"] This option, if present, will clear "stickiness" from all fields touched by this import. Requires that 'override_sis_stickiness' is also provided. If 'add_sis_stickiness' is also provided, 'clear_sis_stickiness' will overrule the behavior of 'add_sis_stickiness'
   def create
-    if authorized_action(@account, @current_user, :manage)
+    if authorized_action(@account, @current_user, :manage_sis)
       params[:import_type] ||= 'instructure_csv'
       raise "invalid import type parameter" unless SisBatch.valid_import_types.has_key?(params[:import_type])
+
+      if !api_request? && @account.current_sis_batch.try(:importing?)
+        return render :json => {:error=>true, :error_message=> t(:sis_import_in_process_notice, "An SIS import is already in process."), :batch_in_progress=>true}.to_json,
+               :as_text => true
+      end
+
       file_obj = nil
       if params.has_key?(:attachment)
         file_obj = params[:attachment]
@@ -118,36 +131,51 @@ class SisImportsApiController < ApplicationController
                                 request2.media_type)
         end
       end
-      batch = SisBatch.create_with_attachment(@account, params[:import_type], file_obj)
 
+      batch_mode_term = nil
       if params[:batch_mode].to_i > 0
-        batch.batch_mode = true
         if params[:batch_mode_term_id].present?
-          batch.batch_mode_term = api_find(@account.enrollment_terms.active,
+          batch_mode_term = api_find(@account.enrollment_terms.active,
                                            params[:batch_mode_term_id])
         end
-      end
-
-      batch.options ||= {}
-      if params[:override_sis_stickiness].to_i > 0
-        batch.options[:override_sis_stickiness] = true
-        [:add_sis_stickiness, :clear_sis_stickiness].each do |option|
-          batch.options[option] = true if params[option].to_i > 0
+        unless batch_mode_term
+          return render :json => { :message => "Batch mode specified, but the given batch_mode_term_id cannot be found." }, :status => :bad_request
         end
       end
 
-      batch.save!
+      batch = SisBatch.create_with_attachment(@account, params[:import_type], file_obj) do |batch|
+        if batch_mode_term
+          batch.batch_mode = true
+          batch.batch_mode_term = batch_mode_term
+        end
 
-      batch.process
+        batch.options ||= {}
+        if params[:override_sis_stickiness].to_i > 0
+          batch.options[:override_sis_stickiness] = true
+          [:add_sis_stickiness, :clear_sis_stickiness].each do |option|
+            batch.options[option] = true if params[option].to_i > 0
+          end
+        end
+      end
+
+      unless Setting.get('skip_sis_jobs_account_ids', '').split(',').include?(@account.global_id.to_s)
+        batch.process
+      end
+
+      unless api_request?
+        @account.current_sis_batch_id = batch.id
+        @account.save
+      end
+
       render :json => batch.api_json
     end
   end
 
-  # @API
+  # @API Get SIS import status
   #
   # Get the status of an already created SIS import.
   def show
-    if authorized_action(@account, @current_user, :manage)
+    if authorized_action(@account, @current_user, :manage_sis)
       @batch = SisBatch.find(params[:id])
       raise "Sis Import not found" unless @batch
       raise "Batch does not match account" unless @batch.account.id == @account.id

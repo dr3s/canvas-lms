@@ -1,4 +1,5 @@
 @import environment.sass
+@import turnitin.sass
 
 #instructure_ajax_error_box
   :display none
@@ -14,40 +15,97 @@
   :height 300px
   :overflow auto
 
+#fixed_bottom, #flash_message_holder
+  position: fixed
+  z-index: 100000
+  left: 0
+  width: 100%
+
 #flash_message_holder
-  :position fixed
-  :top -5px
-  :z-index 9999
-  width: 100%
+  top: 0
+  list-style: none
+  margin: 0
+  padding: 0
   height: 0
-  a
-    :color #ddd
-#flash_message_wrapper
-  width: 350px
-  max-height: 200px
-  margin: auto
+  li, .ui-effects-wrapper
+    margin: 0 auto !important
+  li
+    box-shadow: 0 1px 1px rgba(0,0,0,0.25)
+    border-bottom-color: rgba(0,0,0,0.5)
+    padding: 4px 40px 4px 8px
+    min-height: 20px
+    vertical-align: middle
+    text-align: center
+    font-weight: bold
+    position: relative
+    z-index: 2
+    width: 400px
+    &.static_message
+      width: auto
+    a.close_link
+      position: absolute
+      right: 10px
+      top: 50%
+      margin-top: -8px
+    i
+      display: inline-block
+      vertical-align: middle
+      margin-right: 0
+      width: 20px
+      height: 20px
+      background-image: url(/images/check_16.png)
+      background-repeat: no-repeat
+    &.ui-state-error, &.ui-state-warning
+      i
+        background-image: url(/images/warning_16.png)
+    &.no_close
+      a.close_link
+        display: none
+    &.xlarge
+      font-size: 1.5em
+      padding: 8px 40px 8px 8px
+      min-height: 42px
+      i
+        width: 40px
+        height: 40px
+        background-image: url(/images/check_36.png)
+      &.ui-state-error, &.ui-state-warning
+        i
+          background-image: url(/images/warning_36.png)
 
-body.no-headers #flash_message_wrapper
-  width: 100%
-
-#flash_notice_message, #flash_error_message
-  :text-align center
-  :background-color #308b4f
-  :color #fff
-  :font-weight bold
-  :overflow auto
-  :padding 6px 30px 4px 15px
-  :cursor pointer
-  box-shadow: 3px 3px 6px rgba(0,0,0,0.5)
-  position: relative
-  a.close-link
-    position: absolute
-    right: 4px
-    top: 8px
-
-#flash_error_message
-  :background-color #b4302d
-
+#unauthorized_message
+  border: 1px solid #000
+  margin: 4em auto
+  width: 500px
+  .ui-state-error, &.ui-state-error
+    position: relative
+    z-index: 1
+    border-style: solid
+    border-width: 1px
+    border-color: rgba(0,0,0,0.1) rgba(0,0,0,0.3) rgba(0,0,0,0.5)
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 3px -1px rgba(0,0,0,0.25)
+    &:before
+      content: " "
+      background: transparent url(/images/warning_36.png) 0 4px no-repeat
+      position: absolute
+      top: 6px
+      left: 22px
+      width: 42px
+      height: 42px
+  h2
+    font-size: 1.5em
+    &.ui-state-error
+      padding: 15px
+      margin: -1px
+      color: #fff
+      height: 60px
+      line-height: 60px
+      padding: 0 0 0 80px
+  p
+    font-size: 1.1em
+    padding: 2em 3em
+    font-weight: bold
+    margin: 0
 
 .user_content,.mceContentBody
   position: relative
@@ -104,10 +162,10 @@ body.no-headers #flash_message_wrapper
     :font-weight bold
     :cursor pointer
 
-      
+
 #right-side
 
-  h2    
+  h2
     .small_link
       :font-size 0.6em
       :font-family arial, sans-serif
@@ -124,7 +182,7 @@ body.no-headers #flash_message_wrapper
     &.limit_height
       :max-height 150px
       :overflow auto
-    
+
   p
     :margin-top 0
     :margin-bottom 1em
@@ -134,11 +192,11 @@ body.no-headers #flash_message_wrapper
     td, tbody th
       background-color: #e6e7e9
 
-      
+
   table.notifications
     :border-top 2px solid #999
     :border-collapse collapse
-    
+
     tr
       :border-color #999
 
@@ -158,7 +216,7 @@ body.no-headers #flash_message_wrapper
       .name
         :font-size 1.5em
         :font-weight bold
-          
+
       .links
         :font-size 0.8em
         :text-align center
@@ -173,14 +231,12 @@ body.no-headers #flash_message_wrapper
     :margin-bottom 20px
     .event-list-view-calendar
       float: right
-      font-size: 0.8em
-      +transparent
-    &:hover .event-list-view-calendar, &:focus .event-list-view-calendar
-      +opaque
-    
+      font-size: 10px
+      font-weight: normal
+
   table.assignments
     :width 100%
-    
+
     td
       :background-color #ddd
       :padding 0.1em 0.5em
@@ -201,7 +257,7 @@ body.no-headers #flash_message_wrapper
         :font-style italic
         :font-size 0.6em
         :padding-bottom 3px
-        
+
         &.graded
           :background-color #bbb
           :color #000
@@ -251,46 +307,46 @@ body.no-headers #flash_message_wrapper
       :vertical-align middle
       :text-align center
       :background-color #aaa
-    
+
     .long_text
       :position relative
       :overflow hidden
-      
+
       &.show_context
         :min-height 1.7em
-        
+
         .text
           :line-height 1.0em
-        
+
       .text_holder
         :position absolute
         :width 500px
         :top 0
         :left 0
-        
+
         .header
           :font-size 0.6em
           :line-height 1.2em
           :color #888
           :padding-left 20px
-          
+
   .details
     :margin 5px
     :padding 5px 10px
     :border 1px solid #888
     +border-radius(5px)
-    
+
     .header
       :color #444
       :font-weight bold
-      
+
     .preview
       :margin 5px 30px 10px
       :padding 5px
       :border 1px solid #aaa
       :text-align center
       +border-radius(5px)
-    
+
     .links
       :margin 10px 0
 
@@ -313,7 +369,7 @@ table.summary
       border-top: 0
       padding: 1px 5px 1px 0
       font-size: 0.8em
-    
+
 
 form table.formtable
   :margin 0
@@ -325,38 +381,43 @@ table.formtable td
   vertical-align: top
   padding: 2px 3px
 
-
-.courses,
-.groups,
-.accounts
+.courses, .groups, .accounts
   .name
     font-size: 1.1em
     font-weight: bold
+
   .unpublished .name a
-    :color #888
-  .details
-    margin-left: 10px
-    font-size: 0.8em
     color: #888
+
+  .details
+    color: #888
+    font-size: 0.8em
+    margin: 0 0 0 10px
+
   .info
-    :font-size 0.8em
-    :clear left
-    :visibility hidden
-    :margin-bottom 5px
-    :margin-left 10px
-    &.info_hover
-      :visibility visible
-      .links
-        :color #ccc
-        a
-          :color #666
+    clear: left
+    font-size: 0.8em
+    margin: 0 0 5px 10px
+    visibility: hidden
+
     .links
-      :color #eee
+      color: #eee
       a
-        :color #bbb
-  
-    a
-      :color #888
+        color: #bbb
+
+.touch .course,
+.touch .group,
+.touch .account,
+.course:hover,
+.group:hover,
+.account:hover
+  .course, .group, .account
+    .info
+      visibility: visible
+      .links
+        color: #ccc
+        a
+          color: #666
 
 span.hint
   :color #666
@@ -457,7 +518,7 @@ span.hint
 
 .error_message
   :color #ED002F
-  
+
 .formError
   :color #ED002F
   :font-size 0.8em
@@ -486,11 +547,11 @@ span.hint
 
 .loading_image
   :background-color #fff
-  
+
 // the body part here is to make this selector more specific than the atr-*** ones in g_util_fancy_links.sass so this overrides
-body .disabled_link 
+body .disabled_link
   :display none
-  
+
 .error_box
   :position absolute
   :top -1000px
@@ -510,26 +571,12 @@ body .disabled_link
     :position absolute
     :bottom 0
     :left 4px
-    
+
 .datetime_suggest
   :font-size 0.8em
   :color #888
   :padding-left 10px
-.datepicker-time
-  :padding 0 0 4px
-  :text-align center
-  input
-    :border 1px solid #aaa
-    :padding 1px 2px
-  select
-    :border 1px solid #aaa
-  button.button
-    font-weight: normal
-  
-  
-#ui-datepicker-div
-  :z-index 9999
-  
+
 #submission_preview
   :margin 20px auto
   &.paper
@@ -539,16 +586,16 @@ body .disabled_link
   &.plain_text
     :width 90%
     :font-family courier,monospace
-    
-    
+
+
 #sidebar .ui-widget
   :margin-bottom 1em
-  
+
 ul.notification_list
   :line-height 1.7em
   :padding-left 10px
   :margin-bottom 20px
-  
+
 ul.group_list
   :line-height 1.7em
   :padding-left 10px
@@ -562,11 +609,11 @@ ul.group_list
   :left 0
   :width 100%
   :display none
-  
+
   h3
     :border-bottom 1px solid #aaa
     :margin 0
-  
+
 
   .wizard_content
     :background-color #eee
@@ -593,7 +640,7 @@ ul.group_list
       :position relative
       p
         :margin-top 0
-          
+
     .wizard_options_list
       :list-style-type none
       :margin 0 10px 0 0
@@ -614,11 +661,11 @@ ul.group_list
           :background-image url(/images/information.png)
         &.assignments_step
           :background-image url(/images/grading_icon.png)
-        &.content_step 
+        &.content_step
           :background-image url(/images/file.png)
-        &.calendar_step 
+        &.calendar_step
           :background-image url(/images/due_date_icon.png)
-        &.publish_step 
+        &.publish_step
           :background-image url(/images/forward.png)
         &.add_step
           :background-image url(/images/add.png)
@@ -630,21 +677,21 @@ ul.group_list
           :background-image url(/images/edit.png)
         &.delete_step
           :background-image url(/images/delete.png)
-        &:hover 
+        &:hover
           :background-color #ddd
-        &.completed a 
+        &.completed a
           :color #aaa
-        &.selected 
+        &.selected
           :background-color #ccc
-    
-#content_tags_dialog 
+
+#content_tags_dialog
   h3
     :margin 0
     :padding 0
     :font-size 0.8em
     :color #888
 
-  .tags 
+  .tags
     :list-style-type none
     :padding 0
     :margin 0
@@ -662,9 +709,9 @@ ul.group_list
       &.uneditable
         :background-color #ddd
 
-        .delete_link 
+        .delete_link
           :display none
-          
+
 .hidden-readable
   :position absolute
   :left -100000px
@@ -675,14 +722,14 @@ ul.group_list
 
 #keyboard_navigation
   :display none
-  
+
   ul.navigation_list
     :padding 0
     :margin 0
     :list-style-type none
     :line-height 1.7em
     :display table
-    
+
     li
       :display table-row
       span
@@ -695,7 +742,7 @@ ul.group_list
         :font-family courier, monospace
         :text-align right
 
-#topic_list 
+#topic_list
   .hidden_until_scroll
     display: none
   .part_of_clump
@@ -724,17 +771,17 @@ ul.group_list
   :border-bottom 1px solid #ddd
   &.selected
     :border-width 1px
-  
+
   div
     &.header
       :padding 2px 5px
       /* :border-bottom 1px solid #eee */
       :_height 25px
       :color #666
-      
+
       .header_title
         :float left
-        
+
       .header_icon
         :float left
         :padding-top 5px
@@ -748,7 +795,7 @@ ul.group_list
       .sub_title
         :margin-left 30px
         :line-height 0.8em
-        
+
       .context_code
         :font-size 0.8em
         :padding-right 5px
@@ -764,7 +811,7 @@ ul.group_list
         :padding-left 0
       .podcast
         display: none
-        
+
       .user_name
         :white-space nowrap
         :font-size 0.8em
@@ -774,6 +821,8 @@ ul.group_list
         :padding-right 10px
         :font-size 0.8em
         :padding-top 0.2em
+        .new-and-total-badge
+          float: right
       .under_links
         :float right
         :clear right
@@ -796,14 +845,14 @@ ul.group_list
     &.content
       :padding 5px 5px 1px 50px
       :color #444
-      
+
       .links
         :text-align right
         :margin-right 2.5em
         :display block
         :font-size 0.8em
         :color #888
-        
+
         a
           :color #666
           &.brief_footer_link
@@ -844,7 +893,7 @@ ul.group_list
               &.correct_answer
                 .answer_bar
                   background: #8EC778
-          
+
       .attachments_list
         a
           :color #888
@@ -879,6 +928,11 @@ ul.group_list
     float: right
     margin-right: 6px
 
+  // use less padding on ones that are a boostrap .alert
+  //(like enrollment invitation and account notifications)
+  &.alert div.content
+    padding-left: 35px
+
 .communication_message_hover
   div.header
     .link_box
@@ -891,7 +945,7 @@ ul.group_list
       +opacity(1.0)
 
 .brief_communication_message
-  div.header 
+  div.header
     .link_box
       :display none
   div.content
@@ -901,11 +955,27 @@ ul.group_list
       &.verbose_footer_link
         :display none
 .communication_message.announcement
-  div.header 
+  div.header
     .header_icon.announcement_header_icon
       :display inline
     .header_icon.discussion_topic_header_icon
       :display none
+.communication_message.conversation
+  .submission
+    ul
+      margin: 0 10px 10px 0
+      padding: 0
+    li
+      padding 2px 5px
+      margin: 0 0 2px 0
+      list-style: none
+      background: #e8e8e8
+    .user_name
+      font-size: 0.8em
+      padding: 0
+    .score
+      float: right
+      padding-right: 10px
 
 .communication_sub_message
   :margin 0 2.5em 2px 0em
@@ -917,11 +987,11 @@ ul.group_list
   :background-color #f2f2f2
 
   div
-    &.header
+    &.header, li
       :padding 0 5px
       :border-width 0px
       :color #999
-      
+
       .link_box
         :float right
         :width 60px
@@ -931,15 +1001,15 @@ ul.group_list
         :opacity 0.5
         a
           :visibility hidden
-        
+
         &:hover
           :opacity 1.0
           a
             :visibility visible
-      
+
       .header_title
         :float left
-        
+
       .user_name
         :padding-left 5px
         :white-space nowrap
@@ -986,7 +1056,7 @@ ul.group_list
       a
         :color #888
     &.footer
-      :float right    
+      :float right
   &.toggled_communication_sub_message
     :display none
   &.lonely_behavior_message
@@ -1010,9 +1080,9 @@ html > body .communication_sub_message .content textarea
 html > body .communication_sub_message .content a.textarea
   width: 97% /* for everyone else */
 
-// hide the '.under_links' untill you hover to message, but only if its not IE6, since it can't do :hover on a <div> 
+// hide the '.under_links' untill you hover to message, but only if its not IE6, since it can't do :hover on a <div>
 html > body .communication_message div.header .under_links
-  +opacity(0) 
+  +opacity(0)
 html > body .communication_message:hover div.header .under_links
   +opacity(1)
 
@@ -1051,12 +1121,12 @@ html > body .new_activity_message a.textarea
   width: 97% /* for everyone else */
 html > body .new_activity_message form textarea
   width: 97% /* for everyone else */
-  
+
 .notification_list
   li a
     :padding-left 20px
-    :background-image url(/images/other_icon.png) 
-    :background-repeat no-repeat 
+    :background-image url(/images/other_icon.png)
+    :background-repeat no-repeat
     :background-position left center
     &.announcement
       :background-image url(/images/announcement_icon.png)
@@ -1072,80 +1142,6 @@ html > body .new_activity_message form textarea
       :background-image url(/images/invitation_icon.png)
     &.message
       :background-image url(/images/message_icon.png)
-
-#feedback_dialog
-  .feedback-type-holder
-    font-size: 1.3em
-    margin-bottom: 5px
-  .feedback-text
-    :float left
-    :font-size 1.3em
-    :margin-right 8px
-  .feedback-option
-    :float left
-    :padding 2px 5px
-    :margin-right 8px
-    :margin-bottom 1px
-    :border 1px solid #ccc
-    :cursor pointer
-    &:hover
-      :background-color #def
-      :border-color #bbb
-    &.feedback-option-selected
-      :border-color #aaa
-      :background-color #cdf
-      :font-weight bold
-#help_dialog
-  padding: 0
-  ul
-    list-style: none
-    padding: 0
-    margin: 0
-    overflow: auto
-    li
-      display: none
-      position: relative
-      overflow: hidden
-      border-top: 1px solid #fafafa
-      border-bottom: 1px solid #d4d5d7
-      background: #e6e7e9
-      height: 49px
-      a
-        display: block
-        padding: 10px 25px
-        text-decoration: none
-        span.text
-          color: #1e7eca
-          font-size: 1.1em
-        span.subtext
-          color: #a2a2a3
-          font-style: italic
-          display: block
-          font-size: 0.9em
-          line-height: 1.1em
-      &:hover
-        border-top-color: #d7eefb
-        border-bottom-color: #297fd1
-        background: #2da5f0 url(/images/feedback/feedback-active.png) repeat-x 0 0
-        a
-          text-decoration: none
-          span.text
-            color: #ffffff
-          span.subtext
-            color: #015f99
-    &.user
-      li.user
-        display: block
-    &.student
-      li.student
-        display: block
-    &.teacher
-      li.teacher
-        display: block
-    &.admin
-      li.admin
-        display: block
-    
 
 .module_legend
   :float right
@@ -1179,7 +1175,7 @@ html > body .new_activity_message form textarea
         :background url(/images/file.png) no-repeat left top
       .attachment_module_item .type_icon
         :background-image url(/images/file_download.png)
-      .assignment_module_item .type_icon 
+      .assignment_module_item .type_icon
         :background-image url(/images/assignment.png)
   .footer
     :text-align right
@@ -1196,11 +1192,12 @@ html > body .new_activity_message form textarea
           img
             :visibility visible
           :background transparent
-  
-      
+
+
 #user_list_boxes
   position: relative
   height: 152px
+  margin-top: 10px
   #user_list_textarea_container, #user_list_processing, #user_list_parsed
     height: 152px
     width: 100%
@@ -1214,15 +1211,34 @@ html > body .new_activity_message form textarea
     overflow: auto
     height: 126px
     .ui-widget
-      margin: 2px
+      margin: 0 8px 8px 0
     .person
-      float: left
-      margin: 2px
+      display: inline-block
+      position: relative
+      background: #FFF
+      margin: 0 8px 8px 0
+      padding: 4px
       font-size: 11px
-      height: 33px
-      padding: 0 4px
+      min-height: 21px
+      -webkit-box-shadow: inset 33px 0 0 #F7F7F7, inset 34px 0 0 #CCC
+      -moz-box-shadow:    inset 33px 0 0 #F7F7F7, inset 34px 0 0 #CCC
+      box-shadow:         inset 33px 0 0 #F7F7F7, inset 34px 0 0 #CCC
+      div
+        margin: 2px 0 0 33px
+      .name::after
+        content: "\a0"
       .address, .login
         font-weight: normal
+      &::before
+        content: ""
+        display: block
+        height: 100%
+        background: url(/images/circle-plus.png) no-repeat center center
+        position: absolute
+        margin: -4px
+        width: 33px
+      &.existing-user::before
+        background-image: url(/images/circle-check.png)
 
 body > #ui-datepicker-div
   display: none
@@ -1242,25 +1258,6 @@ body > #ui-datepicker-div
       float: left
       margin-top: 0.2em
       margin-right: 2px
-
-.editor_box_resizer
-  position: relative
-  height: 1px
-  width: 100%
-  border-bottom: 1px solid #ccc
-  cursor: s-resize !important
-  -moz-user-select: none
-  div.ui-icon
-    display: block
-    position: absolute
-    background-color: !important
-    height: 16px
-    width: 13px
-    right: 0
-    top: -13px
-    background-position: -64px -224px !important
-    background-image: url(/images/jqueryui/ui-icons_222222_256x240.png) !important
-    cursor: se-resize !important
 
 .communication_message .media_comment_thumbnail
   margin: 3px 0
@@ -1284,8 +1281,8 @@ a .media_comment_thumbnail
     background-color: #333
     padding: 2px
     border-width: 0px
-    
-table.side_tabs_table    
+
+table.side_tabs_table
   border-collapse: collapse
   td
     vertical-align: top
@@ -1381,7 +1378,7 @@ body.padless-content #content,#content.padless
     li.requirement
       .description
         font-size: 0.8em
-        
+
       &.locked_requirement
         .description
           padding-left: 20px
@@ -1406,7 +1403,7 @@ body.padless-content #content,#content.padless
       margin-bottom: 5px
       .short_description
         font-weight: bold
-      .description  
+      .description
         font-size: 0.8em
         margin-left: 20px
       .mastery
@@ -1426,7 +1423,7 @@ body.padless-content #content,#content.padless
         -moz-border-radius: 3px
 .custom_search_results_link
   font-size: 1.2em
-  
+
 fieldset
   border: 1px solid #ccc
   +border-radius(3px)
@@ -1435,26 +1432,9 @@ fieldset
   legend
     font-weight: bold
     margin-left: 20px
-
-.turnitin_similarity_score
-  white-space: nowrap
-  border: 1px solid #bbb
-  border-top: 5px solid #bbb
-  padding: 1px 2px 2px
-  font-size: 0.8em
-  &.none_score
-    border-color: #4987EC
-  &.acceptable_score
-    border-color: #52E252
-  &.warning_score
-    border-color: #ECEC49
-  &.problem_score
-    border-color: #FFB420
-  &.failure_score
-    border-color: #FF3F3F
 h2.h-margin-top,h3.h-margin-top
   margin-top: 20px
-  
+
 #license_help_dialog
   #licence-help-options
     th
@@ -1497,22 +1477,85 @@ h2.h-margin-top,h3.h-margin-top
 form.user_content_post_form
   display: none
 
-#change_gradebook_version_link_holder
+#change_gradebook_version_link_holder, #change_calendar_version_link_holder
   float: right !important
   background: none !important
-  a
+#change_gradebook_version_link_holder a, #change_calendar_version_link_holder a, .dashboard-toggle a
+  margin-right: 10px
+  padding: 1px 10px
+  +border-radius(3px)
+  +vertical-gradient(#0abdff, #008fd6)
+  text-decoration: none !important
+  &:hover
+    border-color: #165A92
+    box-shadow: 0 1px 2px 0 rgba(0,0,0,0.5)
+  font-size: 12px
+  font-family: GillSans,Calibri,Trebuchet,sans-serif
+
+  border: 1px solid #1e7eca
+  color: white !important
+  text-shadow: rgba(0,0,0,0.5) 1px 0 1px
+
+  -moz-user-select: none
+  cursor: pointer
+
+.equation_image
+  vertical-align: middle
+
+.dashboard-toggle
+  display: block
+  padding: 10px 0 0
+#breadcrumbs .dashboard-toggle
+  margin: 4px 0
+
+.with-fixed-bottom #wrapper-container
+  padding-bottom: 60px
+
+#fixed_bottom
+  bottom: 0
+  i
+    vertical-align: middle
     margin-right: 10px
-    padding: 1px 10px
-    +border-radius(3px)
-    +vertical-gradient(#0abdff, #008fd6)
-    text-decoration: none !important
-    &:hover
-      border-color: #165A92
-      +box-shadow(rgba(0,0,0,0.5), 0px, 1px, 2px, 0)
-    font-size: 12px
+  b
+    line-height: 28px
+    vertical-align: middle
 
-    border: 1px solid #1e7eca
-    color: white
-    text-shadow: rgba(0,0,0,0.5) 1px 0 1px
+  #masquerade_bar
+    padding: 15px
+    .buttons
+      float: right
+      .btn
+        margin-left: 10px
+      .btn-primary
+        color: white
+    .button-explanation
+      float: right
+      font-size: 10px
+      text-align: right
+    .masquerading_avatar
+      float: left
+      img
+        margin: -3px 10px 0 0
+        max-height: 35px
 
-    -moz-user-select: none
+  .fixed_warning
+    background-color: #FDD
+    border-width: 2px 0 0 0
+    border-style: solid
+    border-color: black
+    padding: 15px
+    opacity: 0.90
+    color: black
+
+.hidden-text
+  overflow: hidden
+  text-indent: -10000px
+  white-space: nowrap
+
+.hidden-inline-text
+  display: inline-block
+  height: 0
+  overflow: hidden
+  text-indent: -10000px
+  white-space: nowrap
+  width: 0

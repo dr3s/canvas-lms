@@ -16,9 +16,49 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+# @API Sections
+#
+# API for accessing section information.
+#
+# @object Section
+#     {
+#       // The unique identifier for the section.
+#       "id": 1,
+#
+#       // The name of the section.
+#       "name": "Section A",
+#
+#       // The sis id of the section.
+#       "sis_section_id": null,
+#
+#       // The unique identifier for the course the section belongs to
+#       "course_id": 7,
+#
+#       // The unique identifier of the original course of a cross-listed section
+#       "nonxlist_course_id": null
+#     }
 class SectionsController < ApplicationController
   before_filter :require_context
-  
+
+  include Api::V1::Section
+
+  # @API List course sections
+  # Returns the list of sections for this course.
+  #
+  # @argument include[] [optional, "students"] Associations to include with the group.
+  # @argument include[] [optional, "avatar_url"] Include the avatar URLs for students returned.
+  #
+  # @returns [Section]
+  def index
+    if authorized_action(@context, @current_user, [:read_roster, :view_all_grades, :manage_grades])
+      includes = Array(params[:include])
+
+      result = @context.active_course_sections.map { |section| section_json(section, @current_user, session, includes) }
+
+      render :json => result
+    end
+  end
+
   def create
     if authorized_action(@context.course_sections.new, @current_user, :create)
       @section = @context.course_sections.build(params[:course_section])
@@ -105,23 +145,42 @@ class SectionsController < ApplicationController
       end
     end
   end
-  
+
+  # @API Get section information
+  # Gets details about a specific section
+  #
+  # @returns Section
   def show
-    @section = @context.course_sections.find(params[:id])
+    @section = @context if @context.is_a?(CourseSection)
+    # if section is set directly by get_context, ensure course is active
+    raise ActiveRecord::RecordNotFound if @section.present? && @section.course.try(:deleted?)
+    @section ||= api_request? ? api_find(@context.course_sections, params[:id]) :
+        @context.course_sections.find(params[:id])
+
     if authorized_action(@section, @current_user, :read)
-      add_crumb(@section.name, named_context_url(@context, :context_section_url, @section))
-      @enrollments = @section.enrollments.sort_by{|e| e.user.sortable_name.downcase }
-      @student_enrollments = @enrollments.select{|e| e.student? }
-      @current_enrollments = @enrollments.select{|e| !e.completed? }
-      @completed_enrollments = @enrollments.select{|e| e.completed? }
+      respond_to do |format|
+        format.html do
+          add_crumb(@section.name, named_context_url(@context, :context_section_url, @section))
+          @enrollments_count = @section.enrollments.not_fake.scoped(:conditions => { :workflow_state => 'active' }).count
+          @completed_enrollments_count = @section.enrollments.not_fake.scoped(:conditions => { :workflow_state => 'completed' }).count
+          @pending_enrollments_count = @section.enrollments.not_fake.scoped(:conditions => { :workflow_state => %w{invited pending} }).count
+          @student_enrollments_count = @section.enrollments.not_fake.scoped(:conditions => { :type => 'StudentEnrollment' }).count
+          js_env(
+            :PERMISSIONS => {
+              :manage_students => @context.grants_right?(@current_user, session, :manage_students) || @context.grants_right?(@current_user, session, :manage_admin_users),
+              :manage_account_settings => @context.account.grants_right?(@current_user, session, :manage_account_settings)
+            })
+        end
+        format.json { render :json => section_json(@section, @current_user, session, []) }
+      end
     end
   end
-  
+
   def destroy
     @section = @context.course_sections.find(params[:id])
     if authorized_action(@section, @current_user, :delete)
       respond_to do |format|
-        if @section.enrollments.empty?
+        if @section.enrollments.not_fake.empty?
           @section.destroy
           flash[:notice] = t('section_deleted', "Course section successfully deleted!")
           format.html { redirect_to course_settings_url(@context) }
@@ -134,6 +193,4 @@ class SectionsController < ApplicationController
       end
     end
   end
-  
-  
 end

@@ -27,9 +27,10 @@ describe "Standard Common Cartridge importing" do
   end
   
   it "should import webcontent" do
-    @course.attachments.count.should == 7
-    %w{I_00001_R I_00006_Media I_media_R f3 f4 f5 802ccbaffe288c33580ae91db32764ab}.each do |mig_id|
-      @course.attachments.find_by_migration_id(mig_id).migration_id.should ==  mig_id
+    @course.attachments.count.should == 10
+    atts = %w{I_00001_R I_00006_Media I_media_R f3 f4 f5 8612e3db71e452d5d2952ff64647c0d8 I_00003_R_IMAGERESOURCE 7acb90d1653008e73753aa2cafb16298 6a35b0974f59819404dc86d48fe39fc3}
+    atts.each do |mig_id|
+      @course.attachments.find_by_migration_id(mig_id).should_not be_nil
     end
   end
   
@@ -39,7 +40,7 @@ describe "Standard Common Cartridge importing" do
     file2_id = @course.attachments.find_by_migration_id("I_00006_Media").id
     
     dt =  @course.discussion_topics.find_by_migration_id("I_00006_R")
-    dt.message.should == %{<p>Your face is ugly. <br /><img src="/courses/#{@course.id}/files/#{file1_id}/preview" /></p>}
+    dt.message.should == %{<p>Your face is ugly. <br><img src="/courses/#{@course.id}/files/#{file1_id}/preview"></p>}
     dt.attachment_id = file2_id
     
     dt =  @course.discussion_topics.find_by_migration_id("I_00009_R")
@@ -101,7 +102,7 @@ describe "Standard Common Cartridge importing" do
     
     mod1 = @course.context_modules.find_by_migration_id("m3")
     mod1.name.should == "Misc Module"
-    mod1.content_tags.count.should == 3
+    mod1.content_tags.count.should == 4
     tag = mod1.content_tags[0]
     tag.content_type.should == 'ExternalUrl'
     tag.title.should == "Wikipedia - Sigmund Freud"
@@ -117,19 +118,37 @@ describe "Standard Common Cartridge importing" do
     tag.title.should == "BLTI Test"
     tag.url.should == "http://www.imsglobal.org/developers/BLTI/tool.php"
     tag.indent.should == 0
+    tag = mod1.content_tags[3]
+    tag.content_type.should == 'Assignment'
+    tag.title.should == "BLTI Assignment Test"
+    tag.content_id.should == @course.assignments.find_by_migration_id("I_00011_R").id
+    tag.indent.should == 0
   end
   
   it "should import external tools" do
-    @course.context_external_tools.count.should == 1
+    @course.context_external_tools.count.should == 2
     et = @course.context_external_tools.find_by_migration_id("I_00010_R")
     et.name.should == "BLTI Test"
     et.url.should == 'http://www.imsglobal.org/developers/BLTI/tool.php'
     et.settings[:custom_fields].should == {"key1"=>"value1", "key2"=>"value2"}
-    et.settings[:vendor_extensions].should == [{:platform=>"my.lms.com", :custom_fields=>{"key"=>"value"}}, {:platform=>"your.lms.com", :custom_fields=>{"key"=>"value", "key2"=>"value2"}}]
+    et.settings[:vendor_extensions].should == [{:platform=>"my.lms.com", :custom_fields=>{"key"=>"value"}}, {:platform=>"your.lms.com", :custom_fields=>{"key"=>"value", "key2"=>"value2"}}].map(&:with_indifferent_access)
     @migration.warnings.member?("The security parameters for the external tool \"#{et.name}\" need to be set in Course Settings.").should be_true
+
+    et = @course.context_external_tools.find_by_migration_id("I_00011_R")
+    et.name.should == "BLTI Assignment Test"
+    et.url.should == 'http://www.imsglobal.org/developers/BLTI/tool2.php'
+    et.settings[:custom_fields].should == {}
+    et.settings[:vendor_extensions].should == [].map(&:with_indifferent_access)
+    @migration.warnings.member?("The security parameters for the external tool \"#{et.name}\" need to be set in Course Settings.").should be_true
+
+    # That second tool had the assignment flag set, so an assignment for it should have been created
+    asmnt = @course.assignments.find_by_migration_id("I_00011_R")
+    asmnt.should_not be_nil
+    asmnt.points_possible.should == 15.5
+    asmnt.external_tool_tag.url.should == et.url
+    asmnt.external_tool_tag.content_type.should == 'ContextExternalTool'
   end
-  
-  
+
   it "should import assessment data" do
     if Qti.qti_enabled?
       quiz = @course.quizzes.find_by_migration_id("I_00003_R")
@@ -150,6 +169,51 @@ describe "Standard Common Cartridge importing" do
     end
   end
 
+  it "should find update urls in questions" do
+    if Qti.qti_enabled?
+      q = @course.assessment_questions.find_by_migration_id("I_00003_R_QUE_104045")
+
+      q.question_data[:question_text].should =~ %r{/assessment_questions/#{q.id}/files/\d+/}
+      q.question_data[:answers].first[:html].should =~ %r{/assessment_questions/#{q.id}/files/\d+/}
+      q.question_data[:answers].first[:comments_html].should =~ %r{/assessment_questions/#{q.id}/files/\d+/}
+    else
+      pending("Can't import assessment data with python QTI tool.")
+    end
+  end
+  
+  context "re-importing the cartridge" do
+    
+    append_before do
+      @migration2 = ContentMigration.create(:context => @course)
+      @migration2.migration_settings[:migration_ids_to_import] = {:copy=>{}}
+      @course.import_from_migration(@course_data, nil, @migration2)
+    end
+    
+    it "should import webcontent" do
+      @course.attachments.count.should == 20
+      @course.attachments.active.count.should == 10
+      mig_ids = %w{I_00001_R I_00006_Media I_media_R f3 f4 f5 8612e3db71e452d5d2952ff64647c0d8 I_00003_R_IMAGERESOURCE 7acb90d1653008e73753aa2cafb16298 6a35b0974f59819404dc86d48fe39fc3}
+      mig_ids.each do |mig_id|
+        atts = @course.attachments.find_all_by_migration_id(mig_id)
+        atts.length.should == 2
+        atts.any?{|a|a.file_state = 'deleted'}.should == true
+        atts.any?{|a|a.file_state = 'available'}.should == true
+      end
+    end
+    
+    it "should point to new attachment from module" do
+      @course.context_modules.count.should == 3
+      
+      mod1 = @course.context_modules.find_by_migration_id("I_00000")
+      mod1.content_tags.active.count.should == (Qti.qti_enabled? ? 5 : 4)
+      mod1.name.should == "Your Mom, Research, & You"
+      tag = mod1.content_tags.active[0]
+      tag.content_type.should == 'Attachment'
+      tag.content_id.should == @course.attachments.active.find_by_migration_id("I_00001_R").id
+      puts mod1.content_tags.active.count
+    end
+  end
+
 end
 
 describe "More Standard Common Cartridge importing" do
@@ -162,6 +226,7 @@ describe "More Standard Common Cartridge importing" do
     @migration = Object.new
     @migration.stubs(:to_import).returns(nil)
     @migration.stubs(:context).returns(@copy_to)
+    @migration.stubs(:import_object?).returns(true)
   end
 
   it "should properly handle top-level resource references" do

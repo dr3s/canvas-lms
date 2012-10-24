@@ -17,44 +17,51 @@
 #
 
 class AnnouncementsController < ApplicationController
-  before_filter :require_user_for_context, :except => :public_feed
-  before_filter { |c| c.active_tab = "announcements" }  
-  
+  include Api::V1::DiscussionTopics
+
+  before_filter :require_context, :except => :public_feed
+  before_filter { |c| c.active_tab = "announcements" }
+
   def index
-    add_crumb(t(:announcements_crumb, "Announcements"))
     if authorized_action(@context, @current_user, :read)
       return if @context.class.const_defined?('TAB_ANNOUNCEMENTS') && !tab_enabled?(@context.class::TAB_ANNOUNCEMENTS)
-      @announcements = @context.active_announcements.paginate(:page => params[:page]).reject{|a| a.locked_for?(@current_user, :check_policies => true) }
       log_asset_access("announcements:#{@context.asset_string}", "announcements", "other")
       respond_to do |format|
-        format.html { render }
-        format.json  { render :json => @announcements.to_json(:methods => [:user_name, :discussion_subentry_count], :permissions => {:user => @current_user, :session => session }) }
+        format.html do
+          add_crumb(t(:announcements_crumb, "Announcements"))
+          can_create = @context.announcements.new.grants_right?(@current_user, session, :create)
+          js_env :permissions => {
+            :create => can_create,
+            :moderate => can_create
+          }
+          js_env :is_showing_announcements => true
+          js_env :atom_feed_url => feeds_announcements_format_path((@context_enrollment || @context).feed_code, :atom)
+        end
       end
     end
   end
-  
+
   def show
     redirect_to named_context_url(@context, :context_discussion_topic_url, params[:id])
   end
-  
-  
+
   def public_feed
     return unless get_feed_context
-    announcements = @context.announcements.active.find(:all, :order => 'created_at DESC', :limit => 15).reject{|a| a.locked_for?(@current_user, :check_policies => true) }
+    announcements = @context.announcements.active.find(:all, :order => 'posted_at DESC', :limit => 15).reject{|a| a.locked_for?(@current_user, :check_policies => true) }
     respond_to do |format|
-      format.atom { 
+      format.atom {
         feed = Atom::Feed.new do |f|
           f.title = t(:feed_name, "%{course} Announcements Feed", :course => @context.name)
-          f.links << Atom::Link.new(:href => named_context_url(@context, :context_announcements_url))
+          f.links << Atom::Link.new(:href => polymorphic_url([@context, :announcements]), :rel => 'self')
           f.updated = Time.now
-          f.id = named_context_url(@context, :context_announcements_url)
+          f.id = polymorphic_url([@context, :announcements])
         end
         announcements.each do |e|
           feed.entries << e.to_atom
         end
-        render :text => feed.to_xml 
+        render :text => feed.to_xml
       }
-      format.rss { 
+      format.rss {
         @announcements = announcements
         require 'rss/2.0'
         rss = RSS::Rss.new("2.0")
@@ -65,7 +72,7 @@ class AnnouncementsController < ApplicationController
         elsif @context.is_a?(Group)
           channel.description = t(:podcast_feed_description_group, "Any media files linked from or embedded within announcements in the group \"%{group}\" will appear in this feed.", :group => @context.name)
         end
-        channel.link = named_context_url(@context, :context_announcements_url)
+        channel.link = polymorphic_url([@context, :announcements])
         channel.pubDate = Time.now.strftime("%a, %d %b %Y %H:%M:%S %z")
         elements = Announcement.podcast_elements(announcements, @context)
         elements.each do |item|
@@ -76,30 +83,5 @@ class AnnouncementsController < ApplicationController
       }
     end
   end
-  
-  def create_external_feed
-    if authorized_action(@context.announcements.new, @current_user, :create)
-      params[:external_feed].delete(:add_header_match)
-      @feed = @context.external_feeds.build(params[:external_feed])
-      @feed.feed_purpose = "announcements"
-      @feed.user = @current_user
-      @feed.feed_type = "rss/atom"
-      if @feed.save
-        render :json => @feed.to_json
-      else
-        render :json => @feed.errors.to_json, :response => :bad_request
-      end
-    end
-  end
-  
-  def destroy_external_feed
-    if authorized_action(@context.announcements.new, @current_user, :create)
-      @feed = @context.external_feeds.find(params[:id])
-      if @feed.destroy
-        render :json => @feed.to_json
-      else
-        render :json => @feed.errors.to_json, :response => :bad_request
-      end
-    end
-  end
+
 end

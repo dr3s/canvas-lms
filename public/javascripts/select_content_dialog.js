@@ -16,8 +16,20 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-var INST;
-I18n.scoped('select_content_dialog', function(I18n) {
+define([
+  'INST' /* INST */,
+  'i18n!select_content_dialog',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSONFiles, ajaxJSON */,
+  'jquery.instructure_forms' /* getFormData, errorBox */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags, getUserServices, findLinkForService */,
+  'jquery.instructure_misc_plugins' /* showIf */,
+  'jquery.keycodes' /* keycodes */,
+  'jquery.loadingImg' /* loadingImage */,
+  'jquery.templateData' /* fillTemplateData */
+], function(INST, I18n, $) {
+
 $(document).ready(function() {
   var external_services = null;
   var $dialog = $("#select_context_content_dialog");
@@ -62,11 +74,10 @@ $(document).ready(function() {
     $("#select_context_content_dialog #context_module_sub_headers_select :text").val("");
     $('#add_module_item_select').change();
     $("#select_context_content_dialog .module_item_select").change();
-    $("#select_context_content_dialog").dialog('close').dialog({
-      autoOpen: true,
+    $("#select_context_content_dialog").dialog({
       title: dialog_title,
       width: 400
-    }).dialog('open');
+    });
     $("#select_context_content_dialog").dialog('option', 'title', dialog_title);
   }
   $("#select_context_content_dialog .cancel_button").click(function() {
@@ -96,7 +107,7 @@ $(document).ready(function() {
     } else if(item_type == 'context_external_tool') {
       var item_data = {
         'item[type]': $("#add_module_item_select").val(),
-        'item[id]': $("#external_urls_select .tools .tool.selected").data('id'),
+        'item[id]': $("#context_external_tools_select .tools .tool.selected").data('id'),
         'item[new_tab]': $("#external_tool_create_new_tab").attr('checked') ? '1' : '0',
         'item[indent]': $("#content_tag_indent").val()
       }
@@ -126,8 +137,16 @@ $(document).ready(function() {
           var url = $("#select_context_content_dialog .module_item_option:visible:first .new .add_item_url").attr('href');
           var data = $("#select_context_content_dialog .module_item_option:visible:first").getFormData();
           var callback = function(data) {
+            var obj;
+
+            // discussion_topics will come from real api v1 and so wont be nested behind a `discussion_topic` root object
+            if (item_data['item[type]'] === 'discussion_topic') {
+              obj = data;
+            } else {
+              obj = data[item_data['item[type]']]; // e.g. data['wiki_page'] for wiki pages
+            }
+
             $("#select_context_content_dialog").loadingImage('remove');
-            var obj = data[item_data['item[type]']] // e.g. data['wiki_page'] for wiki pages
             item_data['item[id]'] = obj.id;
             item_data['item[title]'] = $("#select_context_content_dialog .module_item_option:visible:first .item_title").val();
             item_data['item[title]'] = item_data['item[title]'] || obj.display_name
@@ -245,14 +264,16 @@ $(document).ready(function() {
           $select.find(".tools").empty();
           for(var idx in data) {
             var tool = data[idx];
-            var $tool = $tool_template.clone(true);
-            $tool.toggleClass('resource_selection', !!tool.resource_selection_settings);
-            $tool.fillTemplateData({
-              data: tool,
-              dataValues: ['id', 'url', 'domain', 'name']
-            });
-            $tool.data('tool', tool);
-            $select.find(".tools").append($tool.show());
+            if(tool.url || tool.domain || tool.resource_selection_settings) {
+              var $tool = $tool_template.clone(true);
+              $tool.toggleClass('resource_selection', !!tool.resource_selection_settings);
+              $tool.fillTemplateData({
+                data: tool,
+                dataValues: ['id', 'url', 'domain', 'name']
+              });
+              $tool.data('tool', tool);
+              $select.find(".tools").append($tool.show());
+            }
           }
         }, function(data) {
           $select.find(".message").text(I18n.t('errors.loading_failed', "Loading Failed"));

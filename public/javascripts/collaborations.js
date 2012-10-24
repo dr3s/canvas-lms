@@ -15,8 +15,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
-I18n.scoped('collaborations', function(I18n) {
+define([
+  'i18n!collaborations',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* fillFormData, getFormData, errorBox */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* .dim, confirmDelete, fragmentChange, showIf */,
+  'jquery.templateData' /* getTemplateData */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function(I18n, $) {
 
   function removeCollaborationDiv(div) {
     if($("#collaborations .collaboration:visible").length <= 1) {
@@ -80,11 +88,10 @@ I18n.scoped('collaborations', function(I18n) {
       var $collaboration = $(this).parents(".collaboration");
       if($(this).parents(".collaboration").hasClass('google_docs')) {
         $("#delete_collaboration_dialog").data('collaboration', $collaboration);
-        $("#delete_collaboration_dialog").dialog('close').dialog({
-          autoOpen: false,
+        $("#delete_collaboration_dialog").dialog({
           title: "Delete Collaboration?",
           width: 350
-        }).dialog('open');
+        });
       } else {
         $collaboration.confirmDelete({
           message: "Are you sure you want to delete this collaboration?",
@@ -162,3 +169,4 @@ I18n.scoped('collaborations', function(I18n) {
       $(".add_collaboration_link").click();
   });
 });
+

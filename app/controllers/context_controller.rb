@@ -17,8 +17,9 @@
 #
 
 class ContextController < ApplicationController
-  before_filter :require_user_for_context, :except => [:inbox, :inbox_item, :destroy_inbox_item, :mark_inbox_as_read, :create_media_object, :kaltura_notifications, :media_object_redirect, :media_object_inline, :media_object_thumbnail, :object_snippet, :discussion_replies]
+  before_filter :require_context, :except => [:inbox, :inbox_item, :destroy_inbox_item, :mark_inbox_as_read, :create_media_object, :kaltura_notifications, :media_object_redirect, :media_object_inline, :media_object_thumbnail, :object_snippet, :discussion_replies]
   before_filter :require_user, :only => [:inbox, :inbox_item, :report_avatar_image, :discussion_replies]
+  before_filter :reject_student_view_student, :only => [:inbox, :inbox_item, :discussion_replies]
   protect_from_forgery :except => [:kaltura_notifications, :object_snippet]
 
   def create_media_object
@@ -55,23 +56,28 @@ class ContextController < ApplicationController
     end
   end
 
-   def media_object_thumbnail
-     mo = MediaObject.by_media_id(params[:id]).first
-     width = params[:width]
-     height = params[:height]
-     type = (params[:type].presence || 2).to_i
-     config = Kaltura::ClientV3.config
-     if config
-       redirect_to Kaltura::ClientV3.new.thumbnail_url(mo.media_id,
-                                                       :width => width,
-                                                       :height => height,
-                                                       :type => type,
-                                                       :protocol => (request.ssl? ? "https" : "http")),
-                   :status => 301
-     else
-       render :text => t(:media_objects_not_configured, "Media Objects not configured")
-     end
-   end
+  def media_object_thumbnail
+    media_id = params[:id]
+    # we prefer using the MediaObject if it exists (so that it can give us
+    # a different media_id if it wants to), but we will also use the provided
+    # media id directly if we can't find a MediaObject. (They don't always get
+    # created yet.)
+    mo = MediaObject.by_media_id(media_id).first
+    width = params[:width]
+    height = params[:height]
+    type = (params[:type].presence || 2).to_i
+    config = Kaltura::ClientV3.config
+    if config
+      redirect_to Kaltura::ClientV3.new.thumbnail_url(mo.try(:media_id) || media_id,
+                                                      :width => width,
+                                                      :height => height,
+                                                      :type => type,
+                                                      :protocol => (request.ssl? ? "https" : "http")),
+                  :status => 301
+    else
+      render :text => t(:media_objects_not_configured, "Media Objects not configured")
+    end
+  end
 
   def kaltura_notifications
     request_params = request.request_parameters.to_a.sort_by{|k, v| k }.select{|k, v| k != 'sig' }
@@ -141,6 +147,10 @@ class ContextController < ApplicationController
   # session. see lib/user_content.rb and the user_content calls throughout the
   # views.
   def object_snippet
+    if HostUrl.has_file_host? && !HostUrl.is_file_host?(request.host_with_port)
+      return render(:nothing => true, :status => 400)
+    end
+
     @snippet = params[:object_data] || ""
     hmac = Canvas::Security.hmac_sha1(@snippet)
 
@@ -211,10 +221,16 @@ class ContextController < ApplicationController
     end
     if authorized_action(@context, @current_user, :read_roster)
       return unless tab_enabled?(@context.class::TAB_CHAT)
-      
+
       add_crumb(t('#crumbs.chat', "Chat"), named_context_url(@context, :context_chat_url))
       self.active_tab="chat"
-      
+
+      js_env :tinychat => {
+               :room => "inst#{Digest::MD5.hexdigest(@context.asset_string)}",
+               :nick => (@current_user.short_name.gsub(/[^\w]+/, '_').sub(/_\z/, '') rescue 'user'),
+               :key  => Tinychat.config['api_key']
+             }
+
       res = nil
       begin
         session[:last_chat] ||= {}
@@ -249,6 +265,10 @@ class ContextController < ApplicationController
       end
     end
   end
+
+  def chat_iframe
+    render :layout => false
+  end
   
   def inbox
     redirect_to conversations_url, :status => :moved_permanently
@@ -276,44 +296,45 @@ class ContextController < ApplicationController
       format.json { render :json => {:marked_as_read => true}.to_json }
     end
   end
-  
-  def roster
-    get_context
 
-    if authorized_action(@context, @current_user, [:read_roster, :manage_students, :manage_admin_users])
-      log_asset_access("roster:#{@context.asset_string}", "roster", "other")
-      if @context.is_a?(Course)
-        @enrollments_hash = {}
-        @context.enrollments.sort_by{|e| [e.state_sortable, e.rank_sortable] }.each{|e| @enrollments_hash[e.user_id] ||= e }
-        @students = @context.students_visible_to(@current_user).find(:all, :order => User.sortable_name_order_by_clause).uniq
-        @teachers = @context.admins.find(:all, :order => User.sortable_name_order_by_clause).uniq
-        user_ids = @students.map(&:id) + @teachers.map(&:id)
-        if @context.visibility_limited_to_course_sections?(@current_user)
-          user_ids = @students.map(&:id) + [@current_user.id]
-        end
-        @primary_users = {t('roster.students', 'Students') => @students}
-        @secondary_users = {t('roster.teachers', 'Teachers & TAs') => @teachers}
-      elsif @context.is_a?(Group)
-        @users = @context.participating_users.find(:all, :order => User.sortable_name_order_by_clause).uniq
-        @primary_users = {t('roster.group_members', 'Group Members') => @users}
-        if @context.context && @context.context.is_a?(Course)
-          @secondary_users = {t('roster.teachers', 'Teachers & TAs') => @context.context.admins.find(:all, :order => User.sortable_name_order_by_clause).uniq}
-        end
+  def roster
+    return unless authorized_action(@context, @current_user, [:read_roster, :manage_students, :manage_admin_users])
+    log_asset_access("roster:#{@context.asset_string}", 'roster', 'other')
+
+    if @context.is_a?(Course)
+      sections = @context.course_sections(:select => 'id, name')
+      js_env :SECTIONS => sections.map { |s| { :id => s.id, :name => s.name } }
+    elsif @context.is_a?(Group)
+      @users         = @context.participating_users.order_by_sortable_name.uniq
+      @primary_users = { t('roster.group_members', 'Group Members') => @users }
+
+      if course = @context.context.try(:is_a?, Course) && @context.context
+        @secondary_users = { t('roster.teachers', 'Teachers & TAs') => course.instructors.order_by_sortable_name.uniq }
       end
-      @secondary_users ||= {}
-      @groups = @context.groups.active rescue []
     end
+
+    @secondary_users ||= {}
+    @groups = @context.groups.active rescue []
   end
-  
+
   def prior_users
-    get_context
     if authorized_action(@context, @current_user, [:manage_students, :manage_admin_users, :read_prior_roster])
-      @prior_memberships = @context.enrollments.scoped(:conditions => {:workflow_state => 'completed'}, :include => :user).to_a.once_per(&:user_id).sort_by{|e| [e.rank_sortable(true), e.user.sortable_name.downcase] }
+      @prior_users = @context.prior_users.
+        where(Enrollment.not_fake.proxy_options[:conditions]).
+        by_top_enrollment(:select => "users.*, NULL AS prior_enrollment").
+        paginate(:page => params[:page], :per_page => 20)
+
+      users = @prior_users.index_by(&:id)
+      if users.present?
+        # put the relevant prior enrollment on each user
+        @context.prior_enrollments.where({:user_id => users.keys}).
+          top_enrollment_by(:user_id, :student).
+          each { |e| users[e.user_id].write_attribute :prior_enrollment, e }
+      end
     end
   end
 
   def roster_user_services
-    get_context
     if authorized_action(@context, @current_user, :read_roster)
       @users = @context.users.order_by_sortable_name
       @users_hash = {}
@@ -330,7 +351,6 @@ class ContextController < ApplicationController
   end
   
   def roster_user_usage
-    get_context
     if authorized_action(@context, @current_user, :read_reports)
       @user = @context.users.find(params[:user_id])
       @accesses = AssetUserAccess.for_user(@user).for_context(@context).most_recent.paginate(:page => params[:page], :per_page => 50)
@@ -342,7 +362,6 @@ class ContextController < ApplicationController
   end
   
   def roster_user
-    get_context
     if authorized_action(@context, @current_user, :read_roster)
       if @context.is_a?(Course)
         @membership = @context.enrollments.find_by_user_id(params[:id])
@@ -372,27 +391,39 @@ class ContextController < ApplicationController
       @enrollments = @context.enrollments.for_user(@user) rescue []
       @messages = @entries
       @messages = @messages.select{|m| m.grants_right?(@current_user, session, :read) }.sort_by{|e| e.created_at }.reverse
+
+      if @domain_root_account.enable_profiles?
+        @user_data = profile_data(
+          @user.profile,
+          @current_user,
+          session,
+          ['links', 'user_services']
+        )
+        render :action => :new_roster_user
+        return false
+      end
+      true
     end
   end
     
   def undelete_index
     if authorized_action(@context, @current_user, :manage_content)
-      @item_types = {
-        :discussion_topics => ['workflow_state = ?', 'deleted'],
-        :assignments => ['workflow_state = ?', 'deleted'],
-        :assignment_groups => ['workflow_state = ?', 'deleted'],
-        :enrollments => ['workflow_state = ?', 'deleted'],
-        :default_wiki_wiki_pages => ['workflow_state = ?', 'deleted'],
-        :attachments => ['file_state = ?', 'deleted'],
-        :rubrics => ['workflow_state = ?', 'deleted'],
-        :collaborations => ['workflow_state = ?', 'deleted'],
-        :quizzes => ['workflow_state = ?', 'deleted'],
-        :context_modules => ['workflow_state = ?', 'deleted']
-      }
+      @item_types = [
+        @context.discussion_topics,
+        @context.assignments,
+        @context.assignment_groups,
+        @context.enrollments,
+        @context.wiki.wiki_pages,
+        @context.rubrics,
+        @context.collaborations,
+        @context.quizzes,
+        @context.context_modules
+      ]
       @deleted_items = []
-      @item_types.each do |type, conditions|
-        @deleted_items += @context.send(type).find(:all, :conditions => conditions, :limit => 25) rescue []
+      @item_types.each do |scope|
+        @deleted_items += scope.find(:all, :conditions => "workflow_state='deleted'", :limit => 25)
       end
+      @deleted_items += @context.attachments.find(:all, :conditions => "file_state='deleted'", :limit => 25)
       @deleted_items.sort_by{|item| item.read_attribute(:deleted_at) || item.created_at }.reverse
     end
   end
@@ -402,8 +433,9 @@ class ContextController < ApplicationController
       type = params[:asset_string].split("_")
       id = type.pop
       type = type.join("_")
-      type = 'default_wiki_wiki_pages' if type == 'wiki_pages'
-      @item = @context.send(type.pluralize).find(id)
+      scope = @context
+      scope = @context.wiki if type == 'wiki_pages'
+      @item = scope.send(type.pluralize).find(id)
       @item.restore
       render :json => @item
     end

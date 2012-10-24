@@ -69,6 +69,7 @@ class PseudonymSession < Authlogic::Session::Base
       if is_valid
         # this token has been used -- destroy it, and generate a new one
         # remember_me is implicitly true when they login via the remember_me token
+        controller.session[:used_remember_me_token] = true
         self.remember_me = true
         self.save!
       end
@@ -99,16 +100,10 @@ class PseudonymSession < Authlogic::Session::Base
     super
 
     # have to call super first, as that's what loads attempted_record
-    if !Canvas::Security.allow_login_attempt?(attempted_record, remote_ip)
+    if too_many_attempts? || attempted_record.try(:audit_login, remote_ip, !invalid_password?) == :too_many_attempts
       self.too_many_attempts = true
       errors.add(password_field, I18n.t('errors.max_attempts', 'Too many failed login attempts. Please try again later or contact your system administrator.'))
       return
-    end
-
-    if invalid_password?
-      Canvas::Security.failed_login!(attempted_record, remote_ip)
-    else
-      Canvas::Security.successful_login!(attempted_record, remote_ip)
     end
   end
 

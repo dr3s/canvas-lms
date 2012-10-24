@@ -20,10 +20,18 @@ module CC
     
     def add_assignments
       @course.assignments.active.no_graded_quizzes_or_topics.each do |assignment|
+        next unless export_object?(assignment)
+
+        title = assignment.title rescue I18n.t('course_exports.unknown_titles.assignment', "Unknown assignment")
+
+        if !assignment.can_copy?(@user)
+          add_error(I18n.t('course_exports.errors.assignment_is_locked', "The assignment \"%{title}\" could not be copied because it is locked.", :title => title))
+          next
+        end
+
         begin
           add_assignment(assignment)
         rescue
-          title = assignment.title rescue I18n.t('course_exports.unknown_titles.assignment', "Unknown assignment")
           add_error(I18n.t('course_exports.errors.assignment', "The assignment \"%{title}\" failed to export", :title => title), $!)
         end
       end
@@ -79,13 +87,27 @@ module CC
       node.peer_reviews_due_at CCHelper::ims_datetime(assignment.peer_reviews_due_at) if assignment.peer_reviews_due_at
       node.assignment_group_identifierref CCHelper.create_key(assignment.assignment_group)
       node.grading_standard_identifierref CCHelper.create_key(assignment.grading_standard) if assignment.grading_standard
-      node.rubric_identifierref CCHelper.create_key(assignment.rubric) if assignment.rubric
+      if assignment.rubric
+        assoc = assignment.rubric_association
+        node.rubric_identifierref CCHelper.create_key(assignment.rubric)
+        node.rubric_use_for_grading assoc.use_for_grading
+        node.rubric_hide_score_total assoc.hide_score_total
+        if assoc.summary_data && assoc.summary_data[:saved_comments]
+          node.saved_rubric_comments do |sc_node|
+            assoc.summary_data[:saved_comments].each_pair do |key, vals|
+              vals.each do |val|
+                sc_node.comment(:criterion_id => key){|a|a << val}
+              end
+            end
+          end
+        end
+      end
       node.quiz_identifierref CCHelper.create_key(assignment.quiz) if assignment.quiz
       node.allowed_extensions assignment.allowed_extensions.join(',') unless assignment.allowed_extensions.blank?
       atts = [:points_possible, :min_score, :max_score, :mastery_score, :grading_type,
               :all_day, :submission_types, :position, :turnitin_enabled, :peer_review_count,
               :peer_reviews_assigned, :peer_reviews, :automatic_peer_reviews,
-              :anonymous_peer_reviews, :grade_group_students_individually]
+              :anonymous_peer_reviews, :grade_group_students_individually, :freeze_on_copy]
       atts.each do |att|
         node.tag!(att, assignment.send(att)) if assignment.send(att) == false || !assignment.send(att).blank?
       end

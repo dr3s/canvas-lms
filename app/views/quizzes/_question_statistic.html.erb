@@ -11,7 +11,7 @@
         <% first_column_done = true %>
         <td class="question_name" rowspan="<%= rows %>">
           <div class="question_name">
-          <%= question[:name] %>
+          <%= question[:question_name] || question[:name] %>
             <div style="float: right;" style="width: 1px; height: 100px;"></div>
             <div class="clear"></div>
           </div>
@@ -109,7 +109,7 @@
                           <div class="user_content">
                             <%= user_content(response[:text]) %>
                           </div>
-                          <% if @quiz.graded? %>
+                          <% if @quiz.graded? && !@quiz.anonymous_submissions? %>
                             <div class="user_name" style="text-align: right; font-style: italic;">
                               <%= context_user_name(@context, response[:user_id]) %>
                             </div>

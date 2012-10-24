@@ -12,18 +12,36 @@
 # Option to include a 'more' link
 # Check for nil last child
 
-# Copied from http://pastie.textmate.org/342485, 
+# Copied from http://pastie.textmate.org/342485,
 # based on http://henrik.nyh.se/2008/01/rails-truncate-html-helper
 
 module TextHelper
   def strip_and_truncate(text, options={})
     truncate_text(strip_tags(text), options)
   end
+  module_function :strip_and_truncate
+
   def strip_tags(text)
     text ||= ""
     text.gsub(/<\/?[^>\n]*>/, "").gsub(/&#\d+;/) {|m| puts m; m[2..-1].to_i.chr rescue '' }.gsub(/&\w+;/, "")
   end
-  
+
+  # Converts a string of html to plain text, preserving as much of the
+  # formatting and information as possible
+  #
+  # This is still a pretty basic implementation, I'm sure we'll find ways to
+  # tweak and improve it as time goes on.
+  def html_to_text(html_str)
+    doc = Nokogiri::HTML::DocumentFragment.parse(html_str.squeeze(" ").squeeze("\n"))
+    # translate anchor tags into a markdown-style name/link combo
+    doc.css('a').each { |node| next if node.text.strip == node['href']; node.replace("[#{node.text}](#{node['href']})") }
+    # translate img tags into just a url to the image
+    doc.css('img').each { |node| node.replace(node['src'] || '') }
+    # append a line break to br and p tags, so they retain a line break after stripping tags
+    doc.css('br, p').each { |node| node.after("\n\n") }
+    doc.text.strip
+  end
+
   def quote_clump(quote_lines)
     txt = "<div class='quoted_text_holder'><a href='#' class='show_quoted_text_link'>#{TextHelper.escape_html(I18n.t('lib.text_helper.quoted_text_toggle', "show quoted text"))}</a><div class='quoted_text' style='display: none;'>"
     txt += quote_lines.join("\n")
@@ -64,6 +82,7 @@ module TextHelper
     # insert placeholders for the links we're going to generate, before we go and escape all the html
     links = []
     placeholder_blocks = []
+    message ||= ''
     message = message.gsub(AUTO_LINKIFY_REGEX) do |match|
       placeholder_blocks << if match == AUTO_LINKIFY_PLACEHOLDER
         AUTO_LINKIFY_PLACEHOLDER
@@ -108,7 +127,7 @@ module TextHelper
     end
     links.unshift message
   end
-  
+
   def add_notification_to_link(url, notification_id)
     parts = "#{url}".split("#", 2)
     link = parts[0]
@@ -121,42 +140,61 @@ module TextHelper
   end
 
   def truncate_text(text, options={})
+    truncated = text || ""
+
+    # truncate words
+    if options[:max_words]
+      word_separator = options[:word_separator] || I18n.t('lib.text_helper.word_separator', ' ')
+      truncated = truncated.split(word_separator)[0,options[:max_words]].join(word_separator)
+    end
+
     max_length = options[:max_length] || 30
+    return truncated if truncated.length <= max_length
+
     ellipsis = options[:ellipsis] || I18n.t('lib.text_helper.ellipsis', '...')
-    ellipsis_length = ellipsis.length
-    actual_length = max_length - ellipsis_length
-    
+    actual_length = max_length - ellipsis.length
+
     # First truncate the text down to the bytes max, then lop off any invalid
     # unicode characters at the end.
-    truncated = (text || "")[0,actual_length][/.{0,#{actual_length}}/mu]
-    if truncated.length < text.length
-      truncated + ellipsis
-    else
-      truncated
-    end
+    truncated = truncated[0,actual_length][/.{0,#{actual_length}}/mu]
+    truncated + ellipsis
   end
-  
+
   def self.escape_html(text)
     CGI::escapeHTML text
   end
-  
+
   def self.unescape_html(text)
     CGI::unescapeHTML text
   end
-  
+
   def indent(text, spaces=2)
     text = text.to_s rescue ""
     indentation = " " * spaces
     text.gsub(/\n/, "\n#{indentation}")
   end
-  
+
   def force_zone(time)
     (time.in_time_zone(@time_zone || Time.zone) rescue nil) || time
   end
 
-  def self.date_string(start_date, style=:normal)
+  def self.date_string(start_date, *args)
     return nil unless start_date
     start_date = start_date.in_time_zone.to_date rescue start_date.to_date
+    style = args.last.is_a?(Symbol) ? args.pop : :normal
+    end_date = args.pop
+    end_date = end_date.in_time_zone.to_date rescue end_date.to_date if end_date
+    if end_date.nil? || start_date == end_date
+      date_component(start_date, style)
+    else
+      I18n.t('time.ranges.different_days', "%{start_date_and_time} to %{end_date_and_time}",
+        :start_date_and_time => date_component(start_date, style),
+        :end_date_and_time => date_component(end_date, style)
+      )
+    end
+  end
+
+def self.date_component(start_date, style=:normal)
     today = Time.zone.today
     if style != :long
       if style != :no_words
@@ -170,6 +208,7 @@ module TextHelper
     end
     return I18n.l(start_date, :format => :medium)
   end
+
   def date_string(*args)
     TextHelper.date_string(*args)
   end
@@ -184,7 +223,7 @@ module TextHelper
     end
     result
   end
-  
+
   def datetime_span(*args)
     string = datetime_string(*args)
     if string && !string.empty? && args[0]
@@ -264,10 +303,10 @@ module TextHelper
     truncate_string = options[:ellipsis] || I18n.t('lib.text_helper.ellipsis', '...')
     truncate_string += options[:link] if options[:link]
     truncate_elem = Nokogiri::HTML("<span>" + truncate_string + "</span>").at("span")
-   
+
     current = doc.children.first
     count = 0
-   
+
     while true
       # we found a text node
       if current.is_a?(Nokogiri::XML::Text)
@@ -276,7 +315,7 @@ module TextHelper
         break if count > num_words
         previous = current
       end
-   
+
       if current.children.length > 0
         # this node has children, can't be a text node,
         # lets descend and look for text nodes
@@ -284,14 +323,14 @@ module TextHelper
       elsif !current.next.nil?
         #this has no children, but has a sibling, let's check it out
         current = current.next
-      else 
+      else
         # we are the last child, we need to ascend until we are
         # either done or find a sibling to continue on to
         n = current
         while !n.is_a?(Nokogiri::HTML::Document) and n.parent.next.nil?
           n = n.parent
         end
-   
+
         # we've reached the top and found no more text nodes, break
         if n.is_a?(Nokogiri::HTML::Document)
           break;
@@ -300,18 +339,18 @@ module TextHelper
         end
       end
     end
-   
+
     if count >= num_words
       unless count == num_words
         new_content = current.text.split
-        
+
         # If we're here, the last text node we counted eclipsed the number of words
         # that we want, so we need to cut down on words.  The easiest way to think about
         # this is that without this node we'd have fewer words than the limit, so all
         # the previous words plus a limited number of words from this node are needed.
         # We simply need to figure out how many words are needed and grab that many.
         # Then we need to -subtract- an index, because the first word would be index zero.
-        
+
         # For example, given:
         # <p>Testing this HTML truncater.</p><p>To see if its working.</p>
         # Let's say I want 6 words.  The correct returned string would be:
@@ -328,16 +367,16 @@ module TextHelper
           current.add_previous_sibling(truncate_elem)
           new_node = Nokogiri::XML::Text.new(new_content.join(' '), doc)
           truncate_elem.add_previous_sibling(new_node)
-          current = current.previous
+          current = truncate_elem
         else
           current = previous
           # why would we do this next line? it just ends up xml escaping stuff
           #current.content = current.content
           current.add_next_sibling(truncate_elem)
-          current = current.next
+          current = truncate_elem
         end
       end
-   
+
       # remove everything else
       while !current.is_a?(Nokogiri::HTML::Document)
         while !current.next.nil?
@@ -346,7 +385,7 @@ module TextHelper
         current = current.parent
       end
     end
-   
+
     # now we grab the html and not the text.
     # we do first because nokogiri adds html and body tags
     # which we don't want
@@ -392,5 +431,19 @@ module TextHelper
     # Strip wrapping <p></p> if inlinify == :auto && they completely wrap the result && there are not multiple <p>'s
     result.gsub!(/<\/?p>/, '') if inlinify == :auto && result =~ /\A<p>.*<\/p>\z/m && !(result =~ /.*<p>.*<p>.*/m)
     result.html_safe.strip
+  end
+
+  # This doesn't make any attempt to convert other encodings to utf-8, it just
+  # removes invalid bytes from otherwise valid utf-8 strings.
+  # Basically, this is a last ditch effort, you probably don't want to use it
+  # as part of normal request processing.
+  # It's used for things like filtering out ErrorReport data so that we can
+  # make sure we won't get an invalid utf-8 error trying to save the error
+  # report to the db.
+  def self.strip_invalid_utf8(string)
+    return string unless string.present?
+    # add four spaces to the end of the string, because iconv with the //IGNORE
+    # option will still fail on incomplete byte sequences at the end of the input
+    Iconv.conv('UTF-8//IGNORE', 'UTF-8', string + '    ')[0...-4]
   end
 end

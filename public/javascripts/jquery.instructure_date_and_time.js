@@ -15,9 +15,17 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
- 
-I18n.scoped('instructure', function(I18n) {
-  
+define([
+  'i18n!instructure',
+  'jquery' /* jQuery, $ */,
+  'str/htmlEscape',
+  'jquery.keycodes' /* keycodes */,
+  'vendor/date' /* Date.parse, Date.UTC, Date.today */,
+  'jqueryui/datepicker' /* /\.datepicker/ */,
+  'jqueryui/sortable' /* /\.sortable/ */,
+  'jqueryui/widget' /* /\.widget/ */
+], function(I18n, $, htmlEscape) {
+
   $.parseDateTime = function(date, time) {
     var date = $.datepicker.parseDate('mm/dd/yy', date);
     if(time) {
@@ -151,6 +159,37 @@ I18n.scoped('instructure', function(I18n) {
       return $.parseFromISO.defaults;
     }
   };
+  // fudgeDateForProfileTimezone is used to apply an offset to the date which represents the
+  // difference between the user's configured timezone in their profile, and the timezone
+  // of the browser. We want to display times in the timezone of their profile. Use
+  // unfudgeDateForProfileTimezone to remove the correction before sending dates back to the server.
+  $.fudgeDateForProfileTimezone = function(date, unfudge) {
+    var today = new Date();
+    var user_offset = parseInt($("#time_zone_offset").text(), 10) * -1; // in minutes
+    if (date.getTimezoneOffset() != today.getTimezoneOffset()) {
+      user_offset = user_offset - (date.getTimezoneOffset() - today.getTimezoneOffset());
+    }
+    var minutes_shift = user_offset + date.getTimezoneOffset();
+
+    if (minutes_shift == 0) {
+      return date;
+    }
+
+    time = date.getTime(); // in ms
+    time += minutes_shift * 60 * 1000 * (unfudge === true ? -1 : 1);
+    var newDate = new Date();
+    newDate.setTime(time);
+    return newDate;
+  }
+  $.unfudgeDateForProfileTimezone = function(date) {
+    return $.fudgeDateForProfileTimezone(date, true);
+  }
+  
+  // The following method is simply a helper to use the logic from $.parseFromISO on
+  // an existing Date() object. This is not the right solution and should be replaced.
+  $.parseFromDateUTC = function(date, datetime_type) {
+    return $.parseFromISO($.dateToISO8601UTC(date), datetime_type)
+  };
   $.parseFromISO.ref_date = new Date();
   $.parseFromISO.offset = $.parseFromISO.ref_date.getTimezoneOffset() * 60000;
   $.parseFromISO.defaults = {
@@ -165,6 +204,25 @@ I18n.scoped('instructure', function(I18n) {
       time_formatted: "",
       time_string: ""
   };
+  $.dateToISO8601UTC = function(date) {
+    var padZero = function(n) { return n < 10 ? '0' + n : n; }
+    return date.getUTCFullYear() + '-' +
+      padZero(date.getUTCMonth() + 1) + '-' +
+      padZero(date.getUTCDate()) + 'T' +
+      padZero(date.getUTCHours()) + ':' +
+      padZero(date.getUTCMinutes()) + ':' +
+      padZero(date.getUTCSeconds()) + 'Z'
+  }
+  $.dateToISO8601 = function(date) {
+    var padZero = function(n) { n < 10 ? '0' + n : n }
+    return date.getFullYear() + '-' +
+      padZero(date.getMonth() + 1) + '-' +
+      padZero(date.getDate()) + 'T' +
+      padZero(date.getHours()) + ':' +
+      padZero(date.getMinutes()) + ':' +
+      padZero(date.getSeconds()) + 'Z'
+  }
+  
   var today = new Date();
   $.thisYear = function(date) {
     return date && (date.getFullYear() == today.getFullYear());
@@ -220,7 +278,7 @@ I18n.scoped('instructure', function(I18n) {
       var ampm = inst.input.data('time-ampm') || "";
       var selectedAM = (ampm == "am") ? "selected" : "";
       var selectedPM = (ampm == "pm") ? "selected" : "";
-      html += "<div class='datepicker-time'><label for='ui-datepicker-time-hour'>" + $.h(I18n.beforeLabel('datepicker.time', "Time")) + "</label> <input id='ui-datepicker-time-hour' type='text' value='" + hr + "' title='hr' class='ui-datepicker-time-hour' style='width: 20px;'/>:<input type='text' value='" + min + "' title='min' class='ui-datepicker-time-minute' style='width: 20px;'/> <select class='ui-datepicker-time-ampm' title='" + $.h(I18n.t('datepicker.titles.am_pm', "am/pm")) + "'><option value=''>&nbsp;</option><option value='am' " + selectedAM + ">" + $.h(I18n.t('#time.am', "am")) + "</option><option value='pm' " + selectedPM + ">" + $.h(I18n.t('#time.pm', "pm")) + "</option></select>&nbsp;&nbsp;&nbsp;<button type='button' class='button small-button ui-datepicker-ok'>" + $.h(I18n.t('#buttons.done', "Done")) + "</button></div>";
+      html += "<div class='ui-datepicker-time ui-corner-bottom'><label for='ui-datepicker-time-hour'>" + htmlEscape(I18n.beforeLabel('datepicker.time', "Time")) + "</label> <input id='ui-datepicker-time-hour' type='text' value='" + hr + "' title='hr' class='ui-datepicker-time-hour' style='width: 20px;'/>:<input type='text' value='" + min + "' title='min' class='ui-datepicker-time-minute' style='width: 20px;'/> <select class='ui-datepicker-time-ampm' title='" + htmlEscape(I18n.t('datepicker.titles.am_pm', "am/pm")) + "'><option value=''>&nbsp;</option><option value='am' " + selectedAM + ">" + htmlEscape(I18n.t('#time.am', "am")) + "</option><option value='pm' " + selectedPM + ">" + htmlEscape(I18n.t('#time.pm', "pm")) + "</option></select>&nbsp;&nbsp;&nbsp;<button type='button' class='button btn-mini ui-datepicker-ok'>" + htmlEscape(I18n.t('#buttons.done', "Done")) + "</button></div>";
     }
     return html;
   };
@@ -551,8 +609,8 @@ I18n.scoped('instructure', function(I18n) {
     pickerHtml += "<div class='clear'></div>";
     pickerHtml += "</div>";
     pickerHtml += "<div class='widget_group ampm_group'>";
-    pickerHtml += "<div class='ui-widget ui-state-default time_slot'>" + $.h(I18n.t('#time.am', "am")) + "</div>";
-    pickerHtml += "<div class='ui-widget ui-state-default time_slot'>" + $.h(I18n.t('#time.pm', "pm")) + "</div>";
+    pickerHtml += "<div class='ui-widget ui-state-default time_slot'>" + htmlEscape(I18n.t('#time.am', "am")) + "</div>";
+    pickerHtml += "<div class='ui-widget ui-state-default time_slot'>" + htmlEscape(I18n.t('#time.pm', "pm")) + "</div>";
     pickerHtml += "<div class='clear'></div>";
     pickerHtml += "</div>";
     $picker.html(pickerHtml);

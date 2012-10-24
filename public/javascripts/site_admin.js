@@ -15,8 +15,14 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+define([
+  'i18n!site_admin',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags */
+], function(I18n, $) {
 
-I18n.scoped('site_admin', function(I18n) {
   $(document).ready(function() {
     $(".over_time_link").live('click', function(event) {
       event.preventDefault();
@@ -34,17 +40,16 @@ I18n.scoped('site_admin', function(I18n) {
       });
     });
     function populateDialog(data_points, axis) {
-      $("#over_time_dialog").dialog('close').dialog({
-        autoOpen: false,
+      $("#over_time_dialog").dialog({
         width: 630,
         height: 330
-      }).dialog('open').dialog('option', 'title', I18n.t('titles.value_over_time', "%{value} Over Time", {value: axis}));
+      }).dialog('option', 'title', I18n.t('titles.value_over_time', "%{value} Over Time", {value: axis}));
       var data = new google.visualization.DataTable();
       data.addColumn('date', I18n.t('columns.date', 'Date'));
       data.addColumn('number', axis || I18n.t('columns.value', "Value"));
       data.addColumn('string', 'title1');
       data.addColumn('string', 'text1');
-      
+
       var rows = []
       $.each(data_points, function() {
         var date = new Date();
@@ -54,12 +59,12 @@ I18n.scoped('site_admin', function(I18n) {
           [date, this[1], undefined, undefined]
         )
       });
-      
+
       data.addRows(rows);
 
       var chart = new google.visualization.AnnotatedTimeLine(document.getElementById('over_time'));
       chart.draw(data, {displayAnnotations: false});
     }
   });
-  google.load('visualization', '1', {'packages':['annotatedtimeline']});
 });
+

@@ -1,4 +1,15 @@
-I18n.scoped('grading_standards', function(I18n){
+define([
+  'i18n!grading_standards',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* fillFormData, getFormData */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* ifExists, .dim, undim, confirmDelete */,
+  'compiled/jquery.rails_flash_notifications',
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function(I18n, $) {
+
   $(document).ready(function() {
     $(".add_standard_link").click(function(event) {
       event.preventDefault();
@@ -8,12 +19,11 @@ I18n.scoped('grading_standards', function(I18n){
     });
     $(".edit_letter_grades_link").click(function(event) {
       event.preventDefault();
-      $("#edit_letter_grades_form").dialog('close').dialog({
+      $("#edit_letter_grades_form").dialog({
         title: I18n.t('titles.grading_scheme_info', "View/Edit Grading Scheme"),
-        autoOpen: false,
         width: 600,
         height: 310
-      }).dialog('open');
+      });
     });
     $(".grading_standard .delete_grading_standard_link").click(function(event) {
       event.preventDefault();
@@ -31,6 +41,10 @@ I18n.scoped('grading_standards', function(I18n){
           $.flashError(I18n.t('errors.cannot_delete_grading_scheme', "There was a problem deleting this grading scheme"));
         }
       });
+    });
+    $(".grading_standard .done_button").click(function(event) {
+      event.preventDefault();
+      $("#edit_letter_grades_form").dialog('close');
     });
     $(".grading_standard .remove_grading_standard_link").click(function(event) {
       event.preventDefault();

@@ -22,7 +22,7 @@ describe WikiPage do
   it "should send page updated notifications" do
     course_with_teacher(:active_all => true)
     n = Notification.create(:name => "Updated Wiki Page", :category => "TestImmediately")
-    NotificationPolicy.create(:notification => n, :communication_channel => @user.communication_channel, :user => @user, :frequency => "immediately")
+    NotificationPolicy.create(:notification => n, :communication_channel => @user.communication_channel, :frequency => "immediately")
     p = @course.wiki.wiki_pages.create(:title => "some page")
     p.created_at = 3.days.ago
     p.notify_of_update = true
@@ -88,29 +88,6 @@ describe WikiPage do
     p1.url.should eql('asdf-2')
   end
 
-  context "atom" do
-    
-    it "should use the wiki namespace context name in the title" do
-      
-    end
-
-    # context = opts[:context]
-    # namespace = self.wiki.wiki_namespaces.find_by_context_id(context && context.id) || self.wiki.wiki_namespaces.find(:first)
-    # prefix = namespace.context_prefix || ""
-    # Atom::Entry.new do |entry|
-    #   entry.title     = "Wiki Page#{", " + namespace.context.name}: #{self.title}"
-    #   entry.updated   = self.updated_at
-    #   entry.published = self.created_at
-    #   entry.id        = "tag:instructure.com,#{self.created_at.strftime("%Y-%m-%d")}:/wiki_pages/#{self.feed_code}_#{self.updated_at.strftime("%Y-%m-%d")}"
-    #   entry.links    << Atom::Link.new(:rel => 'alternate', 
-    #                                 :href => "http://#{HostUrl.context_host(namespace.context)}/#{prefix}/wiki/#{self.url}")
-    #   entry.content   = Atom::Content::Html.new(self.body)
-    
-    
-  # end
-    
-  end
-  
   context "clone_for" do
     it "should clone for another context" do
       course_with_teacher(:active_all => true)

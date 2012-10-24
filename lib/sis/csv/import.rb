@@ -106,10 +106,19 @@ module SIS
         @files = nil
 
         IMPORTERS.each do |importer|
-          @csvs[importer].each do |csv|
-            rows = (%x{wc -l '#{csv[:fullpath]}'}.split.first.to_i rescue 0)
-            @rows[importer] += rows
-            @total_rows += rows
+          @csvs[importer].reject! do |csv|
+            begin
+              rows = 0
+              FasterCSV.open(csv[:fullpath], "rb", BaseImporter::PARSE_ARGS) do |faster_csv|
+                rows += 1 while faster_csv.shift
+              end
+              @rows[importer] += rows
+              @total_rows += rows
+              false
+            rescue FasterCSV::MalformedCSVError
+              add_error(csv, "Malformed CSV")
+              true
+            end
           end
         end
         @parallelism = 1 if @total_rows <= @minimum_rows_for_parallel
@@ -119,6 +128,14 @@ module SIS
         # and don't do it more often than we have work to do
         @updates_every = [ [ @total_rows / @parallelism / 100, 500 ].min, 10 ].max
 
+        if @batch
+          @batch.data[:supplied_batches] = []
+          IMPORTERS.each do |importer|
+            @batch.data[:supplied_batches] << importer if @csvs[importer].present?
+          end
+          @batch.save!
+        end
+
         if (@parallelism > 1)
           # re-balance the CSVs
           @batch.data[:importers] = {}
@@ -127,6 +144,8 @@ module SIS
               rebalance_csvs(importer)
             end
             @batch.data[:importers][importer] = @csvs[importer].length
+            @batch.data[:counts] = {}
+            @batch.data[:current_row] = 0
           end
           @batch.save!
           @rows = nil
@@ -195,7 +214,7 @@ module SIS
           if @parallelism > 1
             SisBatch.transaction do
               @batch.reload(:select => 'data, progress', :lock => true)
-              @current_row += @batch.data[:current_row] if @batch.data[:current_row]
+              @current_row += @batch.data[:current_row]
               @batch.data[:current_row] = @current_row
               @batch.progress = (((@current_row.to_f/@total_rows) * @progress_multiplier) + @progress_offset) * 100
               @batch.save
@@ -250,7 +269,9 @@ module SIS
         end
         # logger doesn't serialize well
         @logger = nil
-        @csvs[importer].each { |csv| self.send_later_enqueue_args(:run_single_importer, { :queue => @queue, :priority => Delayed::LOW_PRIORITY }, importer, csv) }
+        enqueue_args = { :priority => Delayed::LOW_PRIORITY }
+        enqueue_args[:queue] = @queue if @queue
+        @csvs[importer].each { |csv| self.send_later_enqueue_args(:run_single_importer, enqueue_args, importer, csv) }
       end
 
 
@@ -313,7 +334,7 @@ module SIS
         headers = @headers[importer].to_a
         path = nil
         begin
-          Attachment.skip_scribd_submits
+          Attachment.skip_3rd_party_submits
           @csvs[importer].each do |csv|
             remaining_in_batch = 0
             FasterCSV.foreach(csv[:fullpath], BaseImporter::PARSE_ARGS) do |row|
@@ -354,7 +375,7 @@ module SIS
           end
         ensure
           out_csv.close if out_csv
-          Attachment.skip_scribd_submits(false)
+          Attachment.skip_3rd_party_submits(false)
         end
         @csvs[importer] = new_csvs
       end
@@ -378,18 +399,23 @@ module SIS
             add_error(csv, "Invalid UTF-8")
             return
           end
-          FasterCSV.foreach(csv[:fullpath], BaseImporter::PARSE_ARGS) do |row|
-            importer = IMPORTERS.index do |importer|
-              if SIS::CSV.const_get(importer.to_s.camelcase + 'Importer').send('is_' + importer.to_s + '_csv?', row)
-                @csvs[importer] << csv
-                @headers[importer].merge(row.headers)
-                true
-              else
-                false
+          begin
+            FasterCSV.foreach(csv[:fullpath], BaseImporter::PARSE_ARGS.merge(:headers => false)) do |row|
+              row.each(&:downcase!)
+              importer = IMPORTERS.index do |importer|
+                if SIS::CSV.const_get(importer.to_s.camelcase + 'Importer').send('is_' + importer.to_s + '_csv?', row)
+                  @csvs[importer] << csv
+                  @headers[importer].merge(row)
+                  true
+                else
+                  false
+                end
               end
+              add_error(csv, "Couldn't find Canvas CSV import headers") if importer.nil?
+              break
             end
-            add_error(csv, "Couldn't find Canvas CSV import headers") if importer.nil?
-            break
+          rescue FasterCSV::MalformedCSVError
+            add_error(csv, "Malformed CSV")
           end
         elsif !File.directory?(csv[:fullpath]) && !(csv[:fullpath] =~ IGNORE_FILES)
           add_warning(csv, "Skipping unknown file type")

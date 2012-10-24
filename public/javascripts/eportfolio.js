@@ -25,9 +25,24 @@
 // settings on their own personal eportfolio, they can't 
 // affect anyone else
 
-I18n.scoped('eportfolio', function(I18n) {
+define([
+  'i18n!eportfolio',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.inst_tree' /* instTree */,
+  'jquery.instructure_forms' /* formSubmit, getFormData, formErrors, errorBox */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags, scrollSidebar */,
+  'jquery.instructure_misc_plugins' /* confirmDelete, showIf */,
+  'jquery.loadingImg' /* loadingImage */,
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'compiled/tinymce',
+  'tinymce.editor_box' /* editorBox */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'jqueryui/progressbar' /* /\.progressbar/ */,
+  'jqueryui/sortable' /* /\.sortable/ */
+], function(I18n, $) {
 
-(function eportfolioInit() {
   function ePortfolioFormData() {
     var data = $("#edit_page_form").getFormData({
       object_name: "eportfolio_entry", 
@@ -60,11 +75,10 @@ I18n.scoped('eportfolio', function(I18n) {
   $(document).ready(function() {
     $(".portfolio_settings_link").click(function(event) {
       event.preventDefault();
-      $("#edit_eportfolio_form").dialog('close').dialog({
-        autoOpen: false,
+      $("#edit_eportfolio_form").dialog({
         width: "auto",
         title: I18n.t('eportfolio_settings', "ePortfolio Settings")
-      }).dialog('open');
+      });
     });
     $("#edit_eportfolio_form .cancel_button").click(function(event) {
       $("#edit_eportfolio_form").dialog('close');
@@ -165,7 +179,7 @@ I18n.scoped('eportfolio', function(I18n) {
       },
       beforeSubmit: function(data) {
         $("#edit_page_form,#page_content,#page_sidebar").removeClass('editing').removeClass('previewing');
-        $("#page_content .section.unsaved").remove();
+        $("#page_content .section.unsaved,#page_content .section .form_content").remove();
         $("#edit_page_form .edit_section").each(function() {
           $(this).editorBox('destroy');
           $(this).remove();
@@ -287,7 +301,7 @@ I18n.scoped('eportfolio', function(I18n) {
       });
       $(this).parents(".section").find(".section_content").empty().append($message.show());
       var $form = $("#upload_file_form").clone(true).attr('id', '');
-      $("body").append($form.hide());
+      $("body").append($form.css({position: 'absolute', zIndex: -1}));
       $form.data('section', $section);
       $form.find(".file_upload").remove().end()
         .append($upload)
@@ -296,6 +310,14 @@ I18n.scoped('eportfolio', function(I18n) {
     });
     $("#upload_file_form").formSubmit({
       fileUpload: true,
+      fileUploadOptions: {
+        preparedFileUpload: true,
+        upload_only: true,
+        singleFile: true,
+        context_code: ENV.context_code,
+        folder_id: ENV.folder_id,
+        formDataTarget: 'uploadDataUrl'
+      },
       object_name: 'attachment',
       processData: function(data) {
         if(!data.uploaded_data) {
@@ -379,15 +401,14 @@ I18n.scoped('eportfolio', function(I18n) {
         $("#add_submission_form .submission_description").val(
           I18n.t('default_description', "This is my %{assignment} submission for %{course}.",
             { 'assignment': assignment, 'course': context }));
-        $("#add_submission_form").dialog('close').dialog({
-          autoOpen: false,
+        $("#add_submission_form").dialog({
           title: I18n.t('titles.add_submission', 'Add Page for Submission'),
           width: 400,
           open: function() {
             $(this).find(":text:visible:first").val(assignment).focus().select();
             $(document).triggerHandler('submission_dialog_opened');
           }
-        }).dialog('open');
+        });
       }
     });
     $("#add_submission_form .cancel_button").click(function() {
@@ -488,7 +509,9 @@ I18n.scoped('eportfolio', function(I18n) {
     }
   }
   function saveObject($obj, type) {
-    if($obj.length === 0) { return; }
+    var isSaving = $obj.data('event_pending');
+    if(isSaving || $obj.length === 0) { return; }
+    $obj.data('event_pending', true);
     var method = "PUT";
     var url = $obj.find(".rename_" + type + "_url").attr('href');
     if($obj.attr('id') == type + '_new') {
@@ -529,6 +552,7 @@ I18n.scoped('eportfolio', function(I18n) {
         id: type + '_' + obj.id,
         hrefValues: ['id', 'slug']
       });
+      $obj.data('event_pending', false);
       countObjects(type);
     });
     return true;
@@ -713,7 +737,7 @@ I18n.scoped('eportfolio', function(I18n) {
       var $category_select = $("#category_select_" + category.id);
       if($category_select.length === 0) {
         $category_select = $("#category_select_blank").clone(true).removeAttr('id');
-        $("#category_select_blank").before($category_select.show());
+        $("#category_select").append($category_select.show());
       }
       $category_select.attr('id', 'category_select_' + category.id)
         .val(category.id).text(category.name);
@@ -851,12 +875,9 @@ I18n.scoped('eportfolio', function(I18n) {
       check(true);
     });
     $(".download_eportfolio_link").click(function(event) {
-      $("#downloading_eportfolio_dialog").dialog('close').dialog({
-        autoOpen: false,
+      $("#downloading_eportfolio_dialog").dialog({
         title: I18n.t('titles.download_eportfolio', "Download ePortfolio")
-      }).dialog('open');
+      });
     });
   });
-})();
-
-})
+});

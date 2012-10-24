@@ -36,7 +36,7 @@ describe TextHelper do
 
     it "should just give the start if no end is provided" do
       datetime = Time.zone.parse("#{Time.zone.now.year}-01-01 12:00:00")
-      th.datetime_string(datetime).should == "Jan  1 at 12pm"
+      th.datetime_string(datetime).should == "Jan 1 at 12pm"
     end
 
     it "should omit the time if shorten_midnight is true and it's (due) at midnight" do
@@ -48,7 +48,7 @@ describe TextHelper do
 
     it "should ignore end if the type is due_date" do
       datetime = Time.zone.parse("#{Time.now.year}-01-01 12:00:00")
-      expected = "Jan  1 by 12pm"
+      expected = "Jan 1 by 12pm"
       th.datetime_string(datetime, :due_date).should == expected
       th.datetime_string(datetime, :due_date, datetime + 1.hour).should == expected
     end
@@ -57,14 +57,14 @@ describe TextHelper do
       start_datetime = Time.zone.parse("#{Time.zone.now.year}-01-01 12:00:00")
       end_datetime = start_datetime + 2.days
       th.datetime_string(start_datetime, :event, end_datetime).should ==
-        "Jan  1 at 12pm to Jan  3 at 12pm"
+        "Jan 1 at 12pm to Jan 3 at 12pm"
     end
 
     it "should give a same-day range if start and end are on the same day" do
       start_datetime = Time.zone.parse("#{Time.zone.now.year}-01-01 12:00:00")
       end_datetime = start_datetime.advance(:hours => 1)
       th.datetime_string(start_datetime, :event, end_datetime).should ==
-        "Jan  1 from 12pm to  1pm"
+        "Jan 1 from 12pm to  1pm"
     end
 
     it "should include the year if the current year isn't the same" do
@@ -127,6 +127,17 @@ describe TextHelper do
       th.date_string(nextyear).split[2].to_i.should == nextyear.year
     end
 
+    it "should ignore the end date if it matches the start date" do
+      start_date = Time.parse("2012-01-01 12:00:00")
+      end_date = Time.parse("2012-01-01 13:00:00")
+      th.date_string(start_date, end_date).should == th.date_string(start_date)
+    end
+
+    it "should do date ranges if the end date differs from the start date" do
+      start_date = Time.parse("2012-01-01 12:00:00")
+      end_date = Time.parse("2012-01-08 12:00:00")
+      th.date_string(start_date, end_date).should == "#{th.date_string(start_date)} to #{th.date_string(end_date)}"
+    end
   end
 
   context "format_message" do
@@ -169,6 +180,11 @@ describe TextHelper do
   end
 
   context "truncate_text" do
+    it "should not split if max_length is exact text length" do
+      str = "I am an exact length"
+      th.truncate_text(str, :max_length => str.length).should == str
+    end
+
     it "should split on multi-byte character boundaries" do
       str = "This\ntext\nhere\n获\nis\nutf-8"
       th.truncate_text(str, :max_length => 9).should ==  "This\nt..."
@@ -180,11 +196,50 @@ describe TextHelper do
       th.truncate_text(str, :max_length => 23).should == "This\ntext\nhere\n获\ni..."
       th.truncate_text(str, :max_length => 80).should == str
     end
+
+    it "should split on words if specified" do
+      str = "I am a sentence with areallylongwordattheendthatcantbesplit and then a few more words"
+      th.truncate_text(str, :max_words => 4, :max_length => 30).should == "I am a sentence"
+      th.truncate_text(str, :max_words => 6, :max_length => 30).should == "I am a sentence with areall..."
+      th.truncate_text(str, :max_words => 5, :max_length => 20).should == "I am a sentence with"
+    end
+  end
+
+  context "truncate_html" do
+    it "should truncate in the middle of an element" do
+      str = "<div>a b c d e</div>"
+      th.truncate_html(str, :num_words => 3).should == "<div>a b c<span>...</span>\n</div>"
+    end
+
+    it "should truncate at the end of an element" do
+      str = "<div><div>a b c</div>d e</div>"
+      th.truncate_html(str, :num_words => 3).should == "<div><div>a b c<span>...</span>\n</div></div>"
+    end
+
+    it "should truncate at the beginning of an element" do
+      str = "<div>a b c<div>d e</div></div>"
+      th.truncate_html(str, :num_words => 3).should == "<div>a b c<span>...</span>\n</div>"
+    end
   end
 
   it "should insert reply to into subject" do
     TextHelper.make_subject_reply_to('ohai').should == 'Re: ohai'
     TextHelper.make_subject_reply_to('Re: ohai').should == 'Re: ohai'
+  end
+
+  context ".html_to_text" do
+    it "should format links in markdown-like style" do
+      th.html_to_text("<a href='www.example.com'>Link</a>").should == "[Link](www.example.com)"
+      th.html_to_text("<a href='www.example.com'>www.example.com</a>").should == "www.example.com"
+    end
+
+    it "should turn images into urls" do
+      th.html_to_text("<img src='http://www.example.com/a'>").should == "http://www.example.com/a"
+    end
+
+    it "should insert newlines for ps and brs" do
+      th.html_to_text("Ohai<br>Text <p>paragraph of text.</p>End").should == "Ohai\n\nText paragraph of text.\n\nEnd"
+    end
   end
 
   context "markdown" do
@@ -201,7 +256,7 @@ describe TextHelper do
         th.mt(:foo, "We **don't** trust the following input: %{input}", :input => "`a` **b** _c_ ![d](e)\n# f\n + g\n - h").
           should == "We <strong>don't</strong> trust the following input: `a` **b** _c_ ![d](e) # f + g - h"
       end
-  
+
       it "should not escape MarkdownSafeBuffers" do
         th.mt(:foo, "We **do** trust the following input: %{input}", :input => th.markdown_safe("`a` **b** _c_ ![d](e)\n# f\n + g\n - h")).
           should == <<-HTML.strip
@@ -223,7 +278,7 @@ describe TextHelper do
         th.mt(:foo, "**this** is another test\n\nwhat will happen?").
           should == "<p><strong>this</strong> is another test</p>\n\n<p>what will happen?</p>"
       end
-  
+
       it "should not inlinify single paragraphs if :inlinify => :never" do
         th.mt(:foo, "**one** more test", :inlinify => :never).
           should == "<p><strong>one</strong> more test</p>"
@@ -255,5 +310,14 @@ Ad dolore andouille meatball irure, ham hock tail exercitation minim ribeye sint
           should == "<p>para1</p>\n\n<p>para2</p>"
       end
     end
+  end
+
+  it "should strip out invalid utf-8" do
+    TextHelper.strip_invalid_utf8("hai\xfb").should == "hai"
+    TextHelper.strip_invalid_utf8("hai\xfb there").should == "hai there"
+    TextHelper.strip_invalid_utf8("hai\xfba").should == "haia"
+    TextHelper.strip_invalid_utf8("hai\xfbab").should == "haiab"
+    TextHelper.strip_invalid_utf8("hai\xfbabc").should == "haiabc"
+    TextHelper.strip_invalid_utf8("hai\xfbabcd").should == "haiabcd"
   end
 end

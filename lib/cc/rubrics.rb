@@ -18,7 +18,10 @@
 module CC
   module Rubrics
     def create_rubrics(document=nil)
-      return nil unless @course.rubrics.active.count > 0
+      return nil unless @course.rubric_associations.count > 0
+
+      # There can be multiple rubric associations to the same rubric, only export each rubric once
+      imported_rubrics = {}
       
       if document
         rubrics_file = nil
@@ -35,7 +38,16 @@ module CC
           "xmlns:xsi"=>"http://www.w3.org/2001/XMLSchema-instance",
           "xsi:schemaLocation"=> "#{CCHelper::CANVAS_NAMESPACE} #{CCHelper::XSD_URI}"
       ) do |rubrics_node|
-        @course.rubrics.active.each do |rubric|
+        @course.rubric_associations.each do |assoc|
+          rubric = assoc.rubric
+          next if rubric.nil? || !rubric.active? || imported_rubrics[rubric.id]
+          if !export_object?(rubric)
+            if assoc.association_type != "Assignment" || !export_object?(assoc.association)
+              next
+            end
+          end
+          imported_rubrics[rubric.id] = true
+
           migration_id = CCHelper.create_key(rubric)
           rubrics_node.rubric(:identifier=>migration_id) do |r_node|
             atts = [:read_only, :title, :reusable, :public, :points_possible,

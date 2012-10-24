@@ -26,16 +26,18 @@ class Pseudonym < ActiveRecord::Base
   belongs_to :user
   has_many :communication_channels, :order => 'position'
   belongs_to :communication_channel
-  has_many :group_memberships
-  has_many :groups, :through => :group_memberships
   belongs_to :sis_communication_channel, :class_name => 'CommunicationChannel'
   validates_length_of :unique_id, :maximum => maximum_string_length
+  validates_presence_of :account_id
+  # allows us to validate the user and pseudonym together, before saving either
+  validates_each :user_id do |record, attr, value|
+    record.errors.add(attr, "blank?") unless value || record.user
+  end
   before_validation :validate_unique_id
   before_destroy :retire_channels
   
   before_save :set_password_changed
   before_validation :infer_defaults, :verify_unique_sis_user_id
-  before_save :set_update_account_associations_if_account_changed
   after_save :update_passwords_on_related_pseudonyms
   after_save :update_account_associations_if_account_changed
   has_a_broadcast_policy
@@ -53,11 +55,12 @@ class Pseudonym < ActiveRecord::Base
     config.validates_uniqueness_of_login_field_options = { :case_sensitive => false, :scope => [:account_id, :workflow_state], :if => lambda { |p| p.unique_id_changed? && p.active? } }
   end
 
+  attr_writer :require_password
   def require_password?
     # Change from auth_logic: don't require a password just because new_record?
     # is true. just check if the pw has changed or crypted_password_field is
     # blank.
-    password_changed? || (send(crypted_password_field).blank? && sis_ssha.blank?)
+    password_changed? || (send(crypted_password_field).blank? && sis_ssha.blank?) || @require_password
   end
 
   acts_as_list :scope => :user_id
@@ -76,18 +79,13 @@ class Pseudonym < ActiveRecord::Base
     }
   end
   
-  def set_update_account_associations_if_account_changed
-    @should_update_user_account_associations = self.account_id_changed?
-    @should_update_account_associations_immediately = self.new_record?
-    true
-  end
-  
   def update_account_associations_if_account_changed
     return unless self.user && !User.skip_updating_account_associations?
-    if @should_update_account_associations_immediately
+    if self.new_record?
+      return if %w{creation_pending deleted}.include?(self.user.workflow_state)
       self.user.update_account_associations(:incremental => true, :precalculated_associations => {self.account_id => 0})
-    else
-      self.user.update_account_associations_later if self.user && @should_update_user_account_associations
+    elsif self.account_id_changed?
+      self.user.update_account_associations_later
     end
   end
   
@@ -135,9 +133,10 @@ class Pseudonym < ActiveRecord::Base
   
   def infer_defaults
     self.account ||= Account.default
-    if !crypted_password || crypted_password == ""
+    if (!crypted_password || crypted_password == "") && !@require_password
       self.generate_temporary_password
     end
+    self.sis_user_id = nil if self.sis_user_id.blank?
   end
   
   def update_passwords_on_related_pseudonyms
@@ -170,7 +169,7 @@ class Pseudonym < ActiveRecord::Base
     :email_login
   end
 
-  def works_for_account?(account)
+  def works_for_account?(account, allow_implicit = false)
     true
   end
 
@@ -289,17 +288,18 @@ class Pseudonym < ActiveRecord::Base
     account = self.account || Account.default
     res = false
     res ||= valid_ldap_credentials?(plaintext_password) if account && account.ldap_authentication?
-    # Only check SIS if they haven't changed their password
-    res ||= valid_ssha?(plaintext_password) if password_auto_generated?
-    res ||= valid_password?(plaintext_password)
+    if account.canvas_authentication?
+      # Only check SIS if they haven't changed their password
+      res ||= valid_ssha?(plaintext_password) if password_auto_generated?
+      res ||= valid_password?(plaintext_password)
+    end
+    res
   end
   
   def generate_temporary_password
-    pw = AutoHandle.generate('tmp-pw', 15)
-    self.password = pw
-    self.password_confirmation = pw
+    self.reset_password
     self.password_auto_generated = true
-    pw
+    self.password
   end
   
   def move_to_user(user, migrate=true)
@@ -333,16 +333,10 @@ class Pseudonym < ActiveRecord::Base
   
   def ldap_bind_result(password_plaintext)
     self.account.account_authorization_configs.each do |config|
-      ldap = config.ldap_connection
-      filter = config.ldap_filter(self.unique_id)
-      begin
-        res = ldap.bind_as(:base => ldap.base, :filter => filter, :password => password_plaintext)
-        return res if res
-      rescue Net::LDAP::LdapError
-        ErrorReport.log_exception(:ldap, $!)
-      end
+      res = config.ldap_bind_result(self.unique_id, password_plaintext)
+      return res if res
     end
-    nil
+    return nil
   end
   
   def add_ldap_channel
@@ -381,9 +375,57 @@ class Pseudonym < ActiveRecord::Base
     {:conditions => {:account_id => account.id, :unique_id => unique_ids}, :order => :unique_id}
   }
   named_scope :active, :conditions => ['pseudonyms.workflow_state IS NULL OR pseudonyms.workflow_state != ?', 'deleted']
-  # returns pseudonyms not from account, but that can be used by account
-  named_scope :trusted_by, lambda { |account| {:conditions => ['account_id<>?', account.id]} }
   named_scope :trusted_by_including_self, lambda { |account| {} }
 
   def self.serialization_excludes; [:crypted_password, :password_salt, :reset_password_token, :persistence_token, :single_access_token, :perishable_token, :sis_ssha]; end
+
+  def self.find_all_by_arbitrary_credentials(credentials, account_ids, remote_ip)
+    return [] if credentials[:unique_id].blank? ||
+                 credentials[:password].blank?
+    too_many_attempts = false
+    pseudonyms = Shard.partition_by_shard(account_ids) do |account_ids|
+      active.
+        by_unique_id(credentials[:unique_id]).
+        where(:account_id => account_ids).
+        all(:include => :user).
+        select { |p|
+          valid = p.valid_arbitrary_credentials?(credentials[:password])
+          too_many_attempts = true if p.audit_login(remote_ip, valid) == :too_many_attempts
+          valid
+        }
+    end
+    return :too_many_attempts if too_many_attempts
+    pseudonyms
+  end
+
+  def self.authenticate(credentials, account_ids, remote_ip = nil)
+    pseudonyms = find_all_by_arbitrary_credentials(credentials, account_ids, remote_ip)
+    return :too_many_attempts if pseudonyms == :too_many_attempts
+    site_admin = pseudonyms.find { |p| p.account_id == Account.site_admin.id }
+    # only log them in if these credentials match a single user OR if it matched site admin
+    if pseudonyms.map(&:user).uniq.length == 1 || site_admin
+      # prefer a pseudonym from Site Admin if possible, otherwise just choose one
+      site_admin || pseudonyms.first
+    end
+  end
+
+  def audit_login(remote_ip, valid_password)
+    return :too_many_attempts unless Canvas::Security.allow_login_attempt?(self, remote_ip)
+
+    if valid_password
+      Canvas::Security.successful_login!(self, remote_ip)
+    else
+      Canvas::Security.failed_login!(self, remote_ip)
+    end
+    nil
+  end
+
+  def mfa_settings
+    case self.account.mfa_settings
+    when :required_for_admins
+      self.account.all_account_users_for(self.user).empty? ? :optional : :required
+    else
+      self.account.mfa_settings
+    end
+  end
 end

@@ -103,7 +103,7 @@ describe "security" do
       post "/login", "pseudonym_session[unique_id]" => "nobody@example.com",
         "pseudonym_session[password]" => "asdfasdf"
       assert_response 302
-      c = response['Set-Cookie'].grep(/\A_normandy_session=/).first
+      c = response['Set-Cookie'].lines.grep(/\A_normandy_session=/).first
       c.should_not match(/expires=/)
       reset!
       https!
@@ -111,7 +111,7 @@ describe "security" do
         "pseudonym_session[password]" => "asdfasdf",
         "pseudonym_session[remember_me]" => "1"
       assert_response 302
-      c = response['Set-Cookie'].grep(/\A_normandy_session=/).first
+      c = response['Set-Cookie'].lines.grep(/\A_normandy_session=/).first
       c.should_not match(/expires=/)
     end
 
@@ -124,8 +124,8 @@ describe "security" do
       post "/login", "pseudonym_session[unique_id]" => "nobody@example.com",
         "pseudonym_session[password]" => "asdfasdf"
       assert_response 302
-      c1 = response['Set-Cookie'].grep(/\Apseudonym_credentials=/).first
-      c2 = response['Set-Cookie'].grep(/\A_normandy_session=/).first
+      c1 = response['Set-Cookie'].lines.grep(/\Apseudonym_credentials=/).first
+      c2 = response['Set-Cookie'].lines.grep(/\A_normandy_session=/).first
       c1.should_not be_present
       c2.should be_present
     end
@@ -140,8 +140,8 @@ describe "security" do
         "pseudonym_session[password]" => "asdfasdf",
         "pseudonym_session[remember_me]" => "1"
       assert_response 302
-      c1 = response['Set-Cookie'].grep(/\Apseudonym_credentials=/).first
-      c2 = response['Set-Cookie'].grep(/\A_normandy_session=/).first
+      c1 = response['Set-Cookie'].lines.grep(/\Apseudonym_credentials=/).first
+      c2 = response['Set-Cookie'].lines.grep(/\A_normandy_session=/).first
       c1.should match(/; *HttpOnly/)
       c2.should match(/; *HttpOnly/)
       c1.should_not match(/; *secure/)
@@ -160,8 +160,8 @@ describe "security" do
         "pseudonym_session[password]" => "asdfasdf",
         "pseudonym_session[remember_me]" => "1"
       assert_response 302
-      c1 = response['Set-Cookie'].grep(/\Apseudonym_credentials=/).first
-      c2 = response['Set-Cookie'].grep(/\A_normandy_session=/).first
+      c1 = response['Set-Cookie'].lines.grep(/\Apseudonym_credentials=/).first
+      c2 = response['Set-Cookie'].lines.grep(/\A_normandy_session=/).first
       c1.should match(/; *secure/)
       c2.should match(/; *secure/)
       ActionController::Base.session_options[:secure] = nil
@@ -237,6 +237,19 @@ describe "security" do
       get "/", {}, "HTTP_COOKIE" => "pseudonym_credentials=#{token.pseudonym_credentials}"
       response.should be_success
       cookies['_normandy_session'].should be_present
+      session[:used_remember_me_token].should be_true
+
+      # accessing sensitive areas of canvas require a fresh login
+      get "/profile/settings"
+      response.should redirect_to login_url
+      flash[:warning].should_not be_empty
+
+      post "/login", :pseudonym_session => { :unique_id => @p.unique_id, :password => 'asdfasdf' }
+      response.should redirect_to settings_profile_url
+      session[:used_remember_me_token].should_not be_true
+
+      follow_redirect!
+      response.should be_success
     end
 
     it "should not allow login via the same valid token twice" do
@@ -374,6 +387,11 @@ describe "security" do
         response.body.should match(/Incorrect username/)
         bad_login("5.5.5.5")
         response.body.should match(/Too many failed login attempts/)
+        # should still fail
+        post_via_redirect "/login",
+          { "pseudonym_session[unique_id]" => "nobody@example.com", "pseudonym_session[password]" => "asdfasdf" },
+          { "REMOTE_ADDR" => "5.5.5.5" }
+        response.body.should match(/Too many failed login attempts/)
       end
 
       it "should have a higher limit for other ips" do
@@ -382,6 +400,11 @@ describe "security" do
         bad_login("5.5.5.6") # different IP, so allowed
         response.body.should match(/Incorrect username/)
         bad_login("5.5.5.7") # different IP, but too many total failures
+        response.body.should match(/Too many failed login attempts/)
+        # should still fail
+        post_via_redirect "/login",
+          { "pseudonym_session[unique_id]" => "nobody@example.com", "pseudonym_session[password]" => "asdfasdf" },
+          { "REMOTE_ADDR" => "5.5.5.7" }
         response.body.should match(/Too many failed login attempts/)
       end
 
@@ -396,6 +419,24 @@ describe "security" do
           { "pseudonym_session[unique_id]" => "second@example.com", "pseudonym_session[password]" => "12341234" },
           { "REMOTE_ADDR" => "5.5.5.5" }
         path.should eql("/?login_success=1")
+      end
+
+      it "should apply limitations correctly for cross-account logins" do
+        account = Account.create!
+        Account.any_instance.stubs(:trusted_account_ids).returns([account.id])
+        @pseudonym.account = account
+        @pseudonym.save!
+        bad_login("5.5.5.5")
+        response.body.should match(/Incorrect username/)
+        bad_login("5.5.5.6") # different IP, so allowed
+        response.body.should match(/Incorrect username/)
+        bad_login("5.5.5.7") # different IP, but too many total failures
+        response.body.should match(/Too many failed login attempts/)
+        # should still fail
+        post_via_redirect "/login",
+          { "pseudonym_session[unique_id]" => "nobody@example.com", "pseudonym_session[password]" => "asdfasdf" },
+          { "REMOTE_ADDR" => "5.5.5.5" }
+        response.body.should match(/Too many failed login attempts/)
       end
     end
   end
@@ -439,6 +480,7 @@ describe "security" do
       student_in_course
       @student = @user
       user_with_pseudonym :user => @student, :username => 'student@example.com', :password => 'password'
+      @student_pseudonym = @pseudonym
 
       account_admin_user :account => Account.site_admin
       @admin = @user
@@ -471,6 +513,7 @@ describe "security" do
       assert_response 200
       session[:become_user_id].should == @student.id.to_s
       assigns['current_user'].id.should == @student.id
+      assigns['current_pseudonym'].should == @student_pseudonym
       assigns['real_current_user'].id.should == @admin.id
     end
 
@@ -531,6 +574,33 @@ describe "security" do
       assigns['real_current_user'].id.should == @admin.id
       PageView.last.user_id.should == @student.id
       PageView.last.real_user_id.should == @admin.id
+    end
+
+    it "should remember the destination with an intervening auth" do
+      token = SessionPersistenceToken.generate(@admin.pseudonyms.first)
+      get "/", {}, "HTTP_COOKIE" => "pseudonym_credentials=#{token.pseudonym_credentials}"
+      response.should be_success
+      cookies['_normandy_session'].should be_present
+      session[:used_remember_me_token].should be_true
+
+      # accessing sensitive areas of canvas require a fresh login
+      get "/conversations?become_user_id=#{@student.id}"
+      response.should redirect_to user_masquerade_url(@student)
+
+      follow_redirect!
+      response.should redirect_to login_url
+      flash[:warning].should_not be_empty
+
+      post "/login", :pseudonym_session => { :unique_id => @admin.pseudonyms.first.unique_id, :password => 'password' }
+      response.should redirect_to user_masquerade_url(@student)
+      session[:used_remember_me_token].should_not be_true
+
+      post "/users/#{@student.id}/masquerade"
+      response.should redirect_to conversations_url
+
+      follow_redirect!
+      response.should be_success
+      session[:become_user_id].should == @student.id.to_s
     end
   end
 
@@ -649,9 +719,6 @@ describe "security" do
         get "/accounts/#{Account.default.id}/statistics"
         response.status.should == "401 Unauthorized"
 
-        get "/accounts/#{Account.default.id}/statistics/page_views"
-        response.status.should == "401 Unauthorized"
-
         get "/accounts/#{Account.default.id}/settings"
         response.should be_success
         response.body.should_not match /Statistics/
@@ -659,9 +726,6 @@ describe "security" do
         add_permission :view_statistics
 
         get "/accounts/#{Account.default.id}/statistics"
-        response.should be_success
-
-        get "/accounts/#{Account.default.id}/statistics/page_views"
         response.should be_success
 
         get "/accounts/#{Account.default.id}/settings"
@@ -779,7 +843,7 @@ describe "security" do
 
         get "/courses/#{@course.id}/users"
         response.should be_success
-        response.body.should match /View Student Groups/
+        response.body.should match /View User Groups/
         response.body.should match /View Prior Enrollments/
         response.body.should_not match /Manage Users/
 
@@ -817,7 +881,7 @@ describe "security" do
 
         get "/courses/#{@course.id}/users"
         response.should be_success
-        response.body.should_not match /View Student Groups/
+        response.body.should_not match /View User Groups/
         response.body.should match /View Prior Enrollments/
         response.body.should match /Manage Users/
 
@@ -862,7 +926,7 @@ describe "security" do
 
       it 'read_course_content' do
         @course.assignments.create!
-        @course.wiki_namespace.wiki.wiki_page.save!
+        @course.wiki.wiki_page.save!
         @course.quizzes.create!
         @course.attachments.create!(:uploaded_data => default_uploaded_data)
 
@@ -910,6 +974,7 @@ describe "security" do
 
         add_permission :read_course_content
         add_permission :read_roster
+        add_permission :read_forum
 
         get "/courses/#{@course.id}"
         response.should be_success
@@ -957,7 +1022,7 @@ describe "security" do
         html.css('.section .files').should_not be_empty
         response.body.should_not match /Copy this Course/
         response.body.should_not match /Import Content into this Course/
-        response.body.should match /Export this Course/
+        response.body.should match /Export Course Content/
         response.body.should_not match /Delete this Course/
         response.body.should_not match /End this Course/
         html.css('#course_account_id').should be_empty
@@ -975,7 +1040,7 @@ describe "security" do
         response.should be_success
         response.body.should match /Copy this Course/
         response.body.should_not match /Import Content into this Course/
-        response.body.should match /Export this Course/
+        response.body.should match /Export Course Content/
         response.body.should match /Delete this Course/
         html = Nokogiri::HTML(response.body)
         html.css('#course_account_id').should_not be_empty

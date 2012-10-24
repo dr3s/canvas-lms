@@ -25,38 +25,24 @@ describe ContextController do
       get 'roster', :course_id => @course.id
       assert_unauthorized
     end
-    
-    it "should assign variables" do
+
+    it "should work when the context is a group in a course" do
       course_with_student_logged_in(:active_all => true)
-      get 'roster', :course_id => @course.id
-      assigns[:students].should_not be_nil
-      assigns[:teachers].should_not be_nil
-    end
-    
-    it "should retrieve students and teachers" do
-      course_with_student_logged_in(:active_all => true)
-      @student = @user
-      @teacher = user(:active_all => true)
-      @teacher = @course.enroll_teacher(@teacher)
-      @teacher.accept!
-      @teacher = @teacher.user
-      get 'roster', :course_id => @course.id
-      assigns[:students].should_not be_nil
-      assigns[:students].should_not be_empty
-      assigns[:students].should be_include(@student) #[0].should eql(@user)
-      assigns[:teachers].should_not be_nil
-      assigns[:teachers].should_not be_empty
-      assigns[:teachers].should be_include(@teacher) #[0].should eql(@teacher)
+      @group = @course.groups.create!
+      @group.add_user(@student, 'accepted')
+      get 'roster', :group_id => @group.id
+      assigns[:primary_users].each_value.first.collect(&:id).should == [@student.id]
+      assigns[:secondary_users].each_value.first.collect(&:id).should == [@teacher.id]
     end
   end
-  
+
   describe "GET 'roster_user'" do
     it "should require authorization" do
       course_with_teacher(:active_all => true)
       get 'roster_user', :course_id => @course.id, :id => @user.id
       assert_unauthorized
     end
-    
+
     it "should assign variables" do
       course_with_student_logged_in(:active_all => true)
       @enrollment = @course.enroll_student(user(:active_all => true))
@@ -78,29 +64,28 @@ describe ContextController do
       get 'chat', :course_id => @course.id, :id => @user.id
       response.should be_redirect
     end
-    
+
     it "should require authorization" do
-      Tinychat.instance_variable_set('@config', {})
+      PluginSetting.create!(:name => "tinychat", :settings => {})
       course_with_teacher(:active_all => true)
       get 'chat', :course_id => @course.id, :id => @user.id
       assert_unauthorized
-      Tinychat.instance_variable_set('@config', nil)
     end
-    
+
     it "should redirect 'disabled', if disabled by the teacher" do
-      Tinychat.instance_variable_set('@config', {})
+      PluginSetting.create!(:name => "tinychat", :settings => {})
       course_with_student_logged_in(:active_all => true)
       @course.update_attribute(:tab_configuration, [{'id'=>9,'hidden'=>true}])
       get 'chat', :course_id => @course.id
       response.should be_redirect
       flash[:notice].should match(/That page has been disabled/)
-      Tinychat.instance_variable_set('@config', nil)
     end
   end
 
   describe "POST 'object_snippet'" do
     before(:each) do
       @obj = "<object data='test'></object>"
+      HostUrl.stubs(:is_file_host?).returns(true)
       @data = Base64.encode64(@obj)
       @hmac = Canvas::Security.hmac_sha1(@data)
     end
@@ -114,6 +99,20 @@ describe ContextController do
       post 'object_snippet', :object_data => @data, :s => @hmac
       response.should be_success
       response['X-XSS-Protection'].should == '0'
+    end
+  end
+
+  describe "GET '/media_objects/:id/thumbnail" do
+    it "should redirect to kaltura even if the MediaObject does not exist" do
+      Kaltura::ClientV3.stubs(:config).returns({})
+      Kaltura::ClientV3.any_instance.expects(:thumbnail_url).returns("http://example.com/thumbnail_redirect")
+      get :media_object_thumbnail,
+        :id => '0_notexist',
+        :width => 100,
+        :height => 100
+
+      response.should be_redirect
+      response.location.should == "http://example.com/thumbnail_redirect"
     end
   end
 
@@ -163,6 +162,20 @@ describe ContextController do
       @media_object.media_id.should == "new_object"
       @media_object.media_type.should == "audio"
       @media_object.title.should == "title"
+    end
+  end
+
+  describe "GET 'prior_users" do
+    before do
+      course_with_teacher_logged_in(:active_all => true)
+      100.times { student_in_course(:active_all => true).conclude }
+      @user = @teacher
+    end
+
+    it "should paginate" do
+      get :prior_users, :course_id => @course.id
+      response.should be_success
+      assigns[:prior_users].size.should eql 20
     end
   end
 end

@@ -18,13 +18,14 @@
 
 def generate_message(notification_name, path_type, asset, options = {})
   raise "options must be a hash!" unless options.is_a? Hash
-  @notification = Notification.create!(:name => notification_name.to_s)
+  @notification = Notification.find_by_name(notification_name.to_s) || Notification.create!(:name => notification_name.to_s)
   user = options[:user]
   asset_context = options[:asset_context]
+  data = options[:data] || {}
   user ||= User.create!(:name => "some user")
   
   @cc = user.communication_channels.create!(:path_type => path_type.to_s, :path => 'generate_message@example.com')
-  @message = Message.new(:notification => @notification, :context => asset, :user => user, :communication_channel => @cc, :asset_context => asset_context)
+  @message = Message.new(:notification => @notification, :context => asset, :user => user, :communication_channel => @cc, :asset_context => asset_context, :data => data)
   @message.delayed_messages = []
   @message.parse!(path_type.to_s)
   @message.body.should_not be_nil

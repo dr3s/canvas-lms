@@ -22,9 +22,9 @@ module GoogleDocs
 
   def google_docs_retrieve_access_token
     consumer = google_consumer
-    if retrieve_current_user
-      service_token, service_secret = Rails.cache.fetch(['google_docs_tokens', @current_user].cache_key) do
-        service = @current_user.user_services.find_by_service("google_docs")
+    if google_docs_user
+      service_token, service_secret = Rails.cache.fetch(['google_docs_tokens', google_docs_user].cache_key) do
+        service = google_docs_user.user_services.find_by_service("google_docs")
         service && [service.token, service.secret]
       end
       raise "User does not have valid Google Docs token" unless service_token && service_secret
@@ -35,8 +35,11 @@ module GoogleDocs
     access_token
   end
 
-  def retrieve_current_user
-    @current_user ||= (self.respond_to?(:user) && self.user.is_a?(User) && self.user) || nil
+  # @real_current_user first ensures that a masquerading user never sees the
+  # masqueradee's files, but in general you may want to block access to google
+  # docs for masqueraders earlier in the request
+  def google_docs_user
+    @real_current_user || @current_user || (self.respond_to?(:user) && self.user.is_a?(User) && self.user) || nil
   end
 
   def google_docs_get_service_user(access_token)
@@ -49,7 +52,9 @@ module GoogleDocs
 
   def google_docs_get_access_token(oauth_request, oauth_verifier)
     consumer = google_consumer
-    request_token = session.delete(:oauth_google_docs_request_token)
+    request_token = OAuth::RequestToken.new(consumer,
+                                            session.delete(:oauth_google_docs_request_token_token),
+                                            session.delete(:oauth_google_docs_request_token_secret))
     access_token = request_token.get_access_token(:oauth_verifier => oauth_verifier)
     service_user_id, service_user_name = google_docs_get_service_user(access_token)
     session[:oauth_gdocs_access_token_token] = access_token.token
@@ -64,24 +69,24 @@ module GoogleDocs
         :service_user_name => service_user_name
       )
       oauth_request.destroy
-      session[:oauth_gdocs_access_token_token] = nil
-      session[:oauth_gdocs_access_token_secret] = nil
+      session.delete(:oauth_gdocs_access_token_token)
+      session.delete(:oauth_gdocs_access_token_secret)
     end
     access_token
   end
 
   def google_docs_request_token_url(return_to)
     consumer = google_consumer
-    session[:oauth_gdocs_user_secret] = AutoHandle.generate(nil, 16)
     request_token = consumer.get_request_token({ :oauth_callback => oauth_success_url(:service => 'google_docs')}, {:scope => "https://docs.google.com/feeds/ https://spreadsheets.google.com/feeds/"})
-    session[:oauth_google_docs_request_token] = request_token
+    session[:oauth_google_docs_request_token_token] = request_token.token
+    session[:oauth_google_docs_request_token_secret] = request_token.secret
     OauthRequest.create(
       :service => 'google_docs',
       :token => request_token.token,
       :secret => request_token.secret,
-      :user_secret => session[:oauth_gdocs_user_secret],
+      :user_secret => AutoHandle.generate(nil, 16),
       :return_url => return_to,
-      :user => @current_user,
+      :user => google_docs_user,
       :original_host_with_port => request.host_with_port
     )
     request_token.authorize_url
@@ -291,6 +296,6 @@ module GoogleDocs
   end
 
   def self.config
-    Canvas::Plugin.find(:google_docs).try(:settings) || (YAML.load_file(RAILS_ROOT + "/config/google_docs.yml")[RAILS_ENV] rescue nil)
+    Canvas::Plugin.find(:google_docs).try(:settings) || Setting.from_config('google_docs')
   end
 end

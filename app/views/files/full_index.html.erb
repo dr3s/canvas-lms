@@ -1,7 +1,7 @@
 <% 
   content_for :page_title, join_title(t(:page_title, "Files"), @context && @context.name)
-  jammit_css :full_files
-  jammit_js :full_files 
+  jammit_css :full_files, :tinymce
+  js_bundle :full_files 
   showing_all_contexts = @context.is_a?(UserProfile) && @context.user == @current_user && params[:show_all_contexts]
 %>
 <div id="file_uploads" style="display: none;">
@@ -24,32 +24,32 @@
     <div id="file_uploads_progress" style="display: none; position: absolute; right: 5px; background-color: #eee; z-index: 2; border: 1px solid #aaa; border-top-width: 0; padding: 2px 5px;">
       <a href="#" id="file_uploads_dialog_link"><%= t 'messages.uploading', "Uploading 5 Files..." %></a>
     </div>
-    <ul id="files_structure_list">
+    <ul id="files_structure_list" role="tree" aria-label="<%= t('file_list', 'File list') %>" aria-live="polite">
       <li id="swfupload_holder">
         <div id="file_swf"></div>
       </li>
       <% @contexts.each do |context| %>
         <% root_folder = Folder.root_folders(context).first %>
-        <li class="context folder folder_<%= root_folder.id %> <%= context.asset_string %>" style="display: none;">
-          <span class="text name"><%= context.name %></span>
+        <li id="folder_<%= root_folder.id %>" class="context folder folder_<%= root_folder.id %> <%= context.asset_string %>" style="display: none;" role="treeitem" tabindex="0" aria-expanded="true">
+          <span class="text name" role="link" aria-controls="folder_<%= root_folder.id %> "><%= context.name %></span>
           <span class="text id" style="display: none;"><%= root_folder.id %></span>
           <ul>
           </ul>
         </li>
       <% end %>
-      <li class="file file_blank" style="display: none;">
+      <li class="file file_blank" style="display: none;" role="treeitem" tabindex="0">
         <span class="id" style="display: none;">&nbsp;</span>
-        <span class="text name">&nbsp;</span>
+        <span class="text name" role="link">&nbsp;</span>
       </li>
-      <li class="folder_blank" style="display: none;">
+      <li class="folder_blank" style="display: none;" role="treeitem" tabindex="0" aria-expanded="false">
         <span class="id" style="display: none;">&nbsp;</span>
-        <span class="text name">&nbsp;</span>
+        <span class="text name" role="link">&nbsp;</span>
         <ul>
         </ul>
       </li>
     </ul>
   </div>
-  <ul id="files_content" class="files_content">
+  <ul id="files_content" class="files_content" aria-label="<%= t('file_details', 'File details') %>">
   </ul>
 </div>
 <% unless showing_all_contexts %>
@@ -126,7 +126,6 @@
         <a href="#" class="lock_item_link no-hover folder_url" title="<%= t 'links.lock_folder', "Lock this Folder" %>"><%= image_tag "lock.png" %></a>
         <a href="#" class="unlock_item_link no-hover folder_url" style="display: none;" title="<%= t 'links.unlock_folder', "Unlock this Folder" %>"><%= image_tag "unlock.png" %></a>
       </span>
-      <a href="#" class="sort_icon" title="<%= t 'alts.drag_to_reorder', "Drag to reorder" %>""><%= image_tag "move-ns.png" %></a>
       <a href="#" class="rename_item_link no-hover"><%= image_tag "edit.png" %></a>
       <a href="#" class="delete_item_link no-hover"><%= image_tag "delete.png" %></a>
     </div>
@@ -149,7 +148,6 @@
         <a href="#" class="lock_item_link no-hover attachment_url" title="<%= t 'links.lock_file', "Lock this File" %>"><%= image_tag "lock.png" %></a>
         <a href="#" class="unlock_item_link no-hover attachment_url" style="display: none;" title="<%= t 'links.unlock_file', "Unlock this File" %>"><%= image_tag "unlock.png" %></a>
       </span>
-      <a href="#" class="sort_icon" title="<%= t 'links.reorder_file', 'Drag to reorder' %>"><%= image_tag "move-ns.png" %></a>
       <a href="#" class="rename_item_link no-hover attachment_url" title="<%= t 'links.rename_file', "Rename this File" %>"><%= image_tag "edit.png" %></a>
       <a href="#" class="delete_item_link no-hover attachment_url" title="<%= t 'links.delete_file', "Delete this File" %>"><%= image_tag "delete.png" %></a>
     </div>
@@ -315,7 +313,7 @@
     <a href="<%= root_url %>/files/{{ id }}/download?wrap=1" class="<%= context.asset_string %>_download_attachment_url">&nbsp;</a>
     <a href="<%= root_url %>/files/{{ id }}/preview" class="<%= context.asset_string %>_preview_attachment_url">&nbsp;</a>
     <a href="<%= root_url %>/zip_file_imports" class="<%= context.asset_string %>_zip_import_url">&nbsp;</a>
-    <a href="<%= context_url(context, :import_status_context_zip_file_imports_url, :format => :json) %>" class="<%= context.asset_string %>_zip_import_status_url" style="display: none;">&nbsp;</a>
+    <a href="<%= context_url(context, :context_zip_file_import_url, "{{ id }}", :format => :json) %>" class="<%= context.asset_string %>_zip_import_status_url" style="display: none;">&nbsp;</a>
     <a href="<%= context_url(context, :context_file_inline_view_url, "{{ id }}") rescue '#' %>" class="<%= context.asset_string %>_inline_view_attachment_url">&nbsp;</a>
     <a href="<%= context_url(context, :context_import_files_url) rescue '#' %>" class="<%= context.asset_string %>_import_url">&nbsp;</a>
     <% if can_do(context, @current_user, :read_roster) %>
@@ -332,14 +330,16 @@
   <% end %>
 </div>
 <div id="edit_content_dialog" style="display: none;" title="<%= t 'titles.edit_file_contents', "Edit File Contents" %>">
+  <a href="#" class="switch_views" style="display:none; float: right"><%= t('switch_views', "Switch Views") %></a>
   <h2><%= t 'titles.edit_file', "Edit %{file}", :file => '<span class="display_name">&nbsp;</span>'.html_safe %></h2>
   <div class="loading_message">
   </div>
   <div class="content">
     <textarea id="edit_content_textarea" style="width: 550px; height: 270px"></textarea>
     <div class="button-container">
-      <button type="button" class="button save_button"><%= t 'buttons.update', "Update File" %></button>
-      <button type="button" class="button button-secondary cancel_button"><%= t '#buttons.cancel', "Cancel" %></button>
+      <div class="html_edit_warning alert" style="display: none;">
+        <%= t('edit_html_warning', "The HTML editor alters your HTML, you should download a backup before saving changes.") %>
+      </div>
     </div>
   </div>
 </div>
@@ -504,23 +504,30 @@ HEREDOC
   <% end %>
 </div>
 </div>
-<% js_block :i18n_scope => 'files' do %>
+<% js_block do %>
 <script>
+require([
+  'INST' /* INST */,
+  'i18nObj' /* I18n.t */,
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_date_and_time' /* time_field, datetime_field */,
+  'jqueryui/dialog',
+  'jqueryui/progressbar' /* /\.progressbar/ */,
+  'vendor/scribd.view' /* scribd */
+], function(INST, I18n, $) {
+
 window.contexts = <%= raw @contexts.to_json(:permissions => {:user => @current_user, :policies => [:create_collaborations,:manage_files,:update,:manage_grades,:read_roster]}, :methods => :asset_string, :include_root => false) %>;
 
-if (!window.INST) {
-  window.INST = {};
-}
 INST.downloadFolderFiles = function(url) {
   var cancelled = false;
-  $("#download_folder_files_dialog .status_box .status").text(I18n.t('messages.gathering_data', "Gathering data..."));
-  $("#download_folder_files_dialog").dialog('close').dialog({
-    autoOpen: false,
-    title: I18n.t('titles.download_folder_contents', "Download Folder Contents"),
+  $("#download_folder_files_dialog .status_box .status").text(<%= jt('#files.messages.gathering_data', "Gathering data...") %>);
+  $("#download_folder_files_dialog").dialog({
+    title: <%= jt('#files.titles.download_folder_contents', "Download Folder Contents") %>,
     close: function() {
       cancelled = true;
     }
-  }).dialog('open');
+  });
   $("#download_folder_files_dialog .progress").progressbar({value: 0});
   var checkForChange = function() {
     if(cancelled || $("#download_folder_files_dialog:visible").length == 0) { return; }
@@ -531,9 +538,9 @@ INST.downloadFolderFiles = function(url) {
         var attachment = data.attachment;
         if(attachment.workflow_state == 'zipped') { 
           $("#download_folder_files_dialog .progress").progressbar('value', 100);
-          var html = I18n.t('messages.zip_finished', "Finished!  Redirecting to File...");
+          var html = <%= jt('#files.messages.zip_finished', "Finished!  Redirecting to File...") %>;
           html += "<br/><a href='" + url +"'><b>";
-          html += I18n.t('links.download_zip', "Click here to download %{size}", {size: attachment.readable_size});
+          html += <%= jt('#files.links.download_zip', "Click here to download %{size}", '{size: attachment.readable_size}') %>;
           html += "</b></a>";
           $("#download_folder_files_dialog .status").html(html)
           $("#download_folder_files_dialog .status_loader").css('visibility', 'hidden');
@@ -544,7 +551,7 @@ INST.downloadFolderFiles = function(url) {
           if(isNaN(progress)) { progress = 0; }
           progress += 5
           $("#download_folder_files_dialog .progress").progressbar('value', progress);
-          $("#download_folder_files_dialog .status").text(progress >= 95 ? I18n.t('messages.creating_zip', "Creating zip file..."): I18n.t('messages.gathering_files_with_progress', "Gathering Files (%{progress}%)...", {progress: progress}))
+          $("#download_folder_files_dialog .status").text(progress >= 95 ? <%= jt('#files.messages.creating_zip', "Creating zip file...") %>: <%= jt('#files.messages.gathering_files_with_progress', "Gathering Files (%{progress}%)...", '{progress: progress}') %>)
           if(progress <= 5 || progress == lastProgress) {
             $.ajaxJSON(url + "?compile=1", 'GET', {}, function() {}, function() {});
           }
@@ -560,6 +567,7 @@ INST.downloadFolderFiles = function(url) {
   }
   checkForChange();
 }
+});
 </script>
 <% end %>
 <div id="download_folder_files_dialog" style="display: none;">

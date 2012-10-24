@@ -1,7 +1,14 @@
-<% 
-  jammit_js :jquery_ui_menu, :speed_grader
+<%
+  js_bundle :speed_grader
   jammit_css :speed_grader
-  @show_left_side = false 
+  js_env({
+    :RUBRIC_ASSESSMENT => {
+      :assessor_id => @current_user ? @current_user.id : "null",
+      :assessment_type => can_do(@assignment, @current_user, :grade) ? "grading" : "peer_review"
+    }
+  })
+  @show_left_side = false
+  @body_classes << 'full-width'
   @can_edit_anything = !@context.completed?
 %>
 <% content_for :page_title, t(:page_title, "%{assignment_name}, SpeedGrader, %{course_name}", :assignment_name => @assignment.title, :course_name => @context.name) %>
@@ -11,11 +18,16 @@
 <div id="gradebook_header" style="display:none;">
   <% form_tag({ :controller => :gradebooks, :course_id => @context.id, :action => :update_submission }) do %>
     <div class="left">
+      <% if service_enabled?(:avatars) %>
+         <div id="avatar">
+          <img src="/images/blank.png" id="avatar_image" alt=""/>
+        </div>
+      <% end %>
       <a href="#" class="prev"><%= t('links.previous', "Previous") %></a>
       <div id="combo_box_container"></div>
       <a href="#" class="next"><%= t('links.next', "Next") %></a>
       <div id='x_of_x_students'>
-        (<%= t(:student_index_of_total, "student %{index} of %{total_students}", :index => raw('<span>???</span>'), :total_students => @assignment.context.students.length) %>)<br />
+        (<%= t(:student_index_of_total, "student %{index} of %{total_students}", :index => raw('<span>???</span>'), :total_students => @assignment.context.students_visible_to(@current_user).uniq.count) %>)<br />
         <a href="<%= context_url(@context, :context_gradebook_url) %>#assignment/<%= @assignment.id %>"><%= t('links.gradebook', "Gradebook") %></a> | 
         <a href="<%= context_url(@context, :context_url) %>"><%= t('links.course_home', "Course Home") %></a>
       </div>
@@ -23,7 +35,9 @@
     <div class="right">
       <a data-muted="<%= @assignment.muted? ? "true" : "false" %>" id="mute_link" href="#"><span class="ui-icon ui-icon-volume-<%= @assignment.muted? ? "on" : "off" %>"></span><span class="label"><%= @assignment.muted? ? t("gradebook.unmute_assignment", "Unmute Assignment") : t("gradebook.mute_assignment", "Mute Assignment") %></span></a>
       <a id="settings_link" href="#"><span class="ui-icon ui-icon-wrench"></span><%= t('links.settings', "Settings") %></a>
-      <% if Setting.get_cached("show_feedback_link", "false") == "true" %>| <a href="#" id="feedback_link"><%= t('links.help', "Help") %></a><% end %>
+      <% if help_link %>
+        | <%= help_link %>
+      <% end %>
       <div>
         <span id="x_of_x_graded"><%= t(:portion_graded, "%{x} / %{y} Graded", :x => raw('<span>0</span>'), :y => raw("<span>#{@assignment.context.students.length}</span>")) %></span>
         <span id='average_score_wrapper' style='display:none; padding-left: 10px;'><%= before_label(:average, "Avg") %> <span id='average_score'>0.0</span></span>
@@ -46,6 +60,12 @@
         <div id="this_student_does_not_have_a_submission">
           <h3><%= t('headers.no_submission', "This student does not have a submission for this assignment") %></h3>
         </div>
+        <div id="this_student_has_a_submission">
+          <h3>
+            <%= t('headers.submission', "This student has submitted the assignment") %>
+            <span class="subheader"><%= t('headers.anonymous_submission', "This student's responses are hidden because this assignment is anonymous.") %></span>
+          </h3>
+        </div>
         <div id="iframe_holder" style="display:none;"></div>
         <div id="resize_overlay" style="display:none;"></div>
       </div>
@@ -55,7 +75,7 @@
     <div class="full_height" id="width_resizer"></div>
     <div id="rightside_inner" class="full_height">
 
-      <div id="submission_details">
+      <div id="submission_details" class="content_box">
         <div id="single_submission">
           <label><%= before_label(:submitted, "Submitted") %></label>
           <span id="single_submission_submitted_at" title="<%= t('titles.on_time', "Submitted on time") %>">??/??/?? at ??:??PM</span>
@@ -73,11 +93,12 @@
           <label><%= t(:submitted_files, "Submitted Files: (click to load)") %></label>
           <div id="submission_files_list">
             <div id="submission_file_hidden"  class="submission-file" style='display:none;'>
-              <a class="turnitin_similarity_score" href="#" title="<%= t('titles.turnitin_score', "Turnitin similarity score -- more information") %>"><span class="similarity_score">10</span>%</a>
+              <span class="turnitin_score_container"></span>
               <a class="submission-file-download" title="<%= t('titles.download_file', "Download this file") %>" href="<%= context_url(@context, :context_assignment_submission_url, @assignment.id, "{{submissionId}}", :download => "{{attachmentId}}") %>"><%= t('links.download_file', "Download File") %></a>
               <a class="display_name no-hover" href="<%= context_url(@context, :context_assignment_submission_url, @assignment.id, "{{submissionId}}", :download => "{{attachmentId}}", :inline => 1) %>" title="<%= t('titles.preview_file', "Preview this File") %>">???</a>
             </div>
           </div>
+          <div class="turnitin_info_container"></div>
         </div>
       </div>
 
@@ -109,7 +130,7 @@
         <h2><%= t('headers.assessment', "Assessment") %></h2>
         <div>
           <% if can_do(@context, @current_user, :manage_grades) %>
-          <div id="grade_container"  class="content_box" style="padding-bottom: 0">
+          <div id="grade_container" class="content_box">
             <label class="bold"><%= t('labels.grade', "Grade") %>
             <%= render :partial => "grading_box_extended", :object => @assignment %>
             <% if @assignment.grading_type == "points" %>
@@ -118,11 +139,10 @@
               (<span class="score">&nbsp;</span> / <%= @assignment.points_possible %>)
             <% end %>
             </label>
-            <a href="#" class="turnitin_similarity_score" title="<%= t('titles.turnitin_score', "Turnitin similarity score -- more information") %>" target="_blank" style="display: none;">
-              <span class="similarity_score"></span>%
-            </a>
+            <span class="turnitin_score_container"></span>
             <a href="#" id="submit_same_score"><br><%= t('links.submit_same_score', "Use this same grade for the resubmission") %></a>
-              <a style="display: none;" title="POST" href="<%= context_url(@context, :update_submission_context_gradebook_url) %>" class="update_submission_grade_url">&nbsp;</a>
+            <a style="display: none;" title="POST" href="<%= context_url(@context, :update_submission_context_gradebook_url) %>" class="update_submission_grade_url">&nbsp;</a>
+            <div class="turnitin_info_container"></div>
           </div>
           <% end %>
           <% if @assignment.rubric_association %>
@@ -150,6 +170,7 @@
           <div id="comments">
             <div class="comment" id="comment_blank" style="display: none;">
               <a href="javascript:void 0;" class="delete_comment_link"><span class="ui-icon ui-icon-close"></span></a>
+              <img src="#" class="avatar" alt="" style="display: none;"/>
               <span class="comment"></span>
               <a href="#" class="play_comment_link media-comment" style="display:none;"><%= t('links.click_to_view', "click here to view") %></a>
               <span class="media_comment_id" style="display: none;">&nbsp;</span>
@@ -227,7 +248,8 @@
   </div>
 </div>
 <a style="display:none;" id="assignment_submission_url" href="<%= context_url(@context, :context_assignment_submission_url, @assignment.id, "{{submission_id}}") %>"></a>
-<a style="display:none;" id="assignment_submission_turnitin_url" href="<%= context_url(@context, :context_assignment_submission_turnitin_report_url, @assignment.id, "{{ user_id }}", "{{ asset_string }}") %>"></a>
+<a style="display:none;" id="assignment_submission_turnitin_report_url" href="<%= context_url(@context, :context_assignment_submission_turnitin_report_url, @assignment.id, "{{ user_id }}", "{{ asset_string }}") %>"></a>
+<a style="display:none;" id="assignment_submission_resubmit_to_turnitin_url" href="<%= context_url(@context, :context_assignment_submission_resubmit_to_turnitin_url, @assignment.id, "{{ user_id }}") %>"></a>
 <form id="settings_form" style="display:none; width:400px;" title="<%= t('titles.speedgrader_options', "Speedgrader Options") %>">
   <p>
     <label for="eg_sort_by"><%= t('labels.sort_by', "Sort student list") %></label>
@@ -257,12 +279,9 @@
 </ul>
 
 <% js_block do %>
-  <script type="text/javascript">
-    anonymousAssignment = <%= @assignment.quiz && @assignment.quiz.survey? && @assignment.quiz.anonymous_submissions ? "true" : "false" %>;
-    var visibleRubricAssessments = <%= raw((@assignment.visible_rubric_assessments_for(@current_user) || {}).to_json(:methods => [:assessor_name], :include_root => false)) %>;
-    
-    rubricAssessment.assessor_id = <%= @current_user ? @current_user.id : "null" %>;
-    rubricAssessment.assessment_type = '<%= can_do(@assignment, @current_user, :grade) ? "grading" : "peer_review" %>';
+  <script>
+    window.anonymousAssignment = <%= @assignment.quiz && @assignment.quiz.survey? && @assignment.quiz.anonymous_submissions ? "true" : "false" %>;
+    window.visibleRubricAssessments = <%= raw((@assignment.visible_rubric_assessments_for(@current_user) || {}).to_json(:methods => [:assessor_name], :include_root => false)) %>;
   </script>
 <% end %>
 <div id="current_context_code" style="display: none;"><%= @context.asset_string %></div>

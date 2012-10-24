@@ -1,6 +1,7 @@
 <%
-  jammit_css :quizzes
-  jammit_js :quizzes_bundle
+  jammit_css :quizzes, :tinymce
+  js_bundle :quizzes_bundle
+  js_env :QUIZZES => {:QUIZ => true}
   content_for :page_title, (@quiz.quiz_title || !@quiz.quiz_title.empty? ? @quiz.quiz_title : t(:default_page_title, 'New Quiz'))
 %>
 <% content_for :right_side do %>
@@ -31,7 +32,7 @@
         <div id="quiz_options" class="rs-margin-lr">
           <table class="stylized" style="margin-bottom: 0;">
             <tr>
-              <td><label for="quiz_assignment_id"><%= before_label(:this_is_a, "This is a") %> </label></td>
+              <td><label for="quiz_assignment_id"><%= before_label(:quiz_type, "Type") %> </label></td>
               <td><select name="quiz[quiz_type]" id="quiz_assignment_id">
                 <option value="practice_quiz"><%= t(:practice_quiz, "Practice Quiz") %></option>
                 <option value="assignment" <%= 'selected' if @quiz.quiz_type == 'assignment' %> ><%= t(:graded_quiz, "Graded Quiz") %></option>
@@ -51,7 +52,7 @@
               </td>
             </tr>
             <tr id="quiz_title">
-              <td class="nobr"><%= blabel :quiz, :title, :quiz_name, :en => "Quiz Name" %></td>
+              <td class="nobr"><%= blabel :quiz, :title, :quiz_name, :en => "Name" %></td>
               <td>
                 <div style="margin-right: 1px;">
                   <%= text_field :quiz, :title, :style => "width: 100%;" %>
@@ -89,7 +90,7 @@
               <td colspan="2">
                 <input type="checkbox" <%= "checked" if @quiz.time_limit %> name="time_limit" id="time_limit_option"/>
                 <label for="time_limit_option"> <%= before_label(:time_limit, "Time Limit") %></label>
-                <%= text_field :quiz, :time_limit, :style => "width: 30px;" %>
+                <%= text_field :quiz, :time_limit, :style => "width: 30px;", :"aria-label" => t(:time_limit, "How many minutes?") %>
                 <%= label :quiz, :time_limit, :time_limit_minutes, :en => "minutes" %>
               </td>
             </tr>
@@ -97,16 +98,17 @@
               <td colspan="2">
                 <input type="hidden" name="quiz[hide_results][never]" value="0"/>
                 <input type="checkbox" name="quiz[hide_results][never]" value="1" id="never_hide_results" <%= 'checked' if @quiz.hide_results != 'always' %> />
-                <label for="never_hide_results"><%= t('labels.never_hide_results', "Let Students See their Quiz Results") %></label>
+                <label for="never_hide_results"><%= t('labels.never_hide_results', "Let Students See their Quiz Responses") %></label>
                 <div style="padding-left: 20px;" class="show_quiz_results_options">
                   <div id="hide_results_only_after_last_holder">
                     <input type="hidden" name="quiz[hide_results][last_attempt]" value="0"/>
                     <input type="checkbox" name="quiz[hide_results][last_attempt]" value="1" id="hide_results_only_after_last" <%= 'checked' if @quiz.hide_results == 'until_after_last_attempt' %> />
                     <label for="hide_results_only_after_last"><%= t('labels.hide_results_only_after_last', "Only After their Last Attempt") %></label>
                   </div>
+
                   <div>
                     <%= check_box :quiz, :show_correct_answers %>
-                    <%= label :quiz, :show_correct_answers, :en => "Show the Correct Answers" %>
+                    <%= label :quiz, :show_correct_answers, :en => "Show Which Answers Were Correct" %>
                   </div>
                 </div>
               </td>
@@ -121,7 +123,7 @@
                   </div>
                   <div>
                     <input type="checkbox" <%= "checked" if @quiz.allowed_attempts && @quiz.allowed_attempts > 1 %> name="limit_attempts" id="limit_attempts_option"/><label for="limit_attempts_option"> <%= before_label(:limited_attempts, "Allowed Attempts") %></label>
-                    <%= text_field :quiz, :allowed_attempts, :style => "width: 20px;", :value => (@quiz.allowed_attempts == -1 ? 1 : @quiz.allowed_attempts) %>
+                    <%= text_field :quiz, :allowed_attempts, :style => "width: 20px;",:tabindex => "0", :value => (@quiz.allowed_attempts == -1 ? 1 : @quiz.allowed_attempts), :"aria-label" => t(:allowed_attempts, "Number of allowed attempts") %>
                   </div>
                 </div>
               </td>
@@ -142,7 +144,7 @@
             </tr>
             <tr id="access_code_suboptions" style="display: none;">
               <td>
-                <label class="nobr" style="padding-left: 40px;" for="quiz_access_code"><%= before_label(:code, "Code") %></label>
+                <label class="nobr" style="padding-left: 40px;" for="quiz_access_code"><%= before_label(:code, "Access Code") %></label>
               </td>
               <td>
                 <input style="width:100%;" type="text" name="quiz[access_code]" id="quiz_access_code" value="<%= @quiz.access_code %>"/>
@@ -157,7 +159,7 @@
             </tr>
             <tr id="ip_filter_suboptions" style="display: none;">
               <td>
-                <label class="nobr" style="padding-left: 40px;" for="quiz_ip_filter"><%= before_label(:filter, "Filter") %></label>
+                <label class="nobr" style="padding-left: 40px;" for="quiz_ip_filter"><%= before_label(:filter, "IP Filter") %></label>
               </td>
               <td>
                 <input type="text" style="width: 100px;" name="quiz[ip_filter]" id="quiz_ip_filter" value="<%= @quiz.ip_filter %>" maxlength="255"/>
@@ -183,7 +185,7 @@
               </tr>
             <% end %>
             <tr>
-              <td class="nobr"><%= before_label(:due_date, "Due Date") %></td>
+              <td class="nobr"><%= blabel :quiz, :due_at, :due_date, :en => "Due Date" %></td>
               <td style="width: 200px;">
                 <div style="margin-right: 1px;">
                   <%= text_field :quiz, :due_at, :style => "width: 100%; margin-right: -24px;", :class => "datetime_field", :value => datetime_string(@quiz.due_at) %>
@@ -191,7 +193,7 @@
               </td>
             </tr>
             <tr>
-              <td class="nobr"><%= before_label(:locked_until, "Locked Until") %></td>
+              <td class="nobr"><%= blabel :quiz, :unlock_at, :locked_until, :en =>  "Locked Until" %></td>
               <td style="width: 200px;">
                 <div style="margin-right: 1px;">
                   <%= text_field :quiz, :unlock_at, :style => "width: 100%; margin-right: -24px;", :class => "datetime_field", :value => datetime_string(@quiz.unlock_at) %>
@@ -199,7 +201,7 @@
               </td>
             </tr>
             <tr>
-              <td class="nobr"><%= before_label(:locked_after, "Locked After") %></td>
+              <td class="nobr"><%= blabel :quiz, :lock_at, :locked_after, :en => "Locked After" %></td>
               <td style="width: 200px;">
                 <div style="margin-right: 1px;">
                   <%= text_field :quiz, :lock_at, :style => "width: 100%; margin-right: -24px;", :class => "datetime_field", :value => datetime_string(@quiz.lock_at) %>
@@ -215,6 +217,10 @@
       <div class="button-container rs-margin-lr">
         <div>
             <% link_to context_url(@context, :context_quiz_take_url, @quiz, :preview => 1), :method => :post do %><%= t('links.preview_quiz', "Preview the Quiz") %><% end %>
+        </div>
+        <div>
+          <input type="checkbox" name="quiz[notify_of_update]" id="quiz_notify_of_update" value="1" checked="checked" />
+          <label for="quiz_notify_of_update"><%= t('labels.quiz_notify', 'Notify users this quiz has changed') %></label>
         </div>
         <button type="submit" class="save_quiz_button button"><%= t('buttons.save_settings', "Save Settings") %></button>
         <button type="submit" class="publish_quiz_button button button-default"><%= @quiz.available? ? t('buttons.republish_quiz', "Re-Publish Quiz") : t('buttons.publish_quiz', "Publish Quiz") %></button>
@@ -236,27 +242,35 @@
     <% end %>
     <% if @assignment %>
     <a href="#" rel="<%= context_url(@context, :context_assignment_rubric_url, @assignment.id) %>" class="show_rubric_link rubric" style="<%= hidden unless @assignment %>"><%= t('links.show_assignment_rubric', "Show Assignment Rubric") %></a>
-    <a href="<%= context_url(@context, :context_rubrics_url) %>" id="add_rubric_url" style="display:hidden">&nbsp;</a>
+    <a href="<%= context_url(@context, :context_rubrics_url) %>" id="add_rubric_url" style="display:none">&nbsp;</a>
     <% end %>
     <a href="#" class="add_question_link add"><%= t('links.add_new_question', "Add a New Question") %></a><br/>
   </div>
 <% end %>
-<% js_block :i18n_scope => 'quizzes.new' do %>
+<% js_block do %>
 <script>
+require([
+  'i18nObj' /* I18n.t */,
+  'jquery' /* $ */,
+  'jquery.instructure_date_and_time' /* time_field, datetime_field */,
+  'jquery.instructure_misc_plugins' /* confirmDelete */
+], function(I18n, $) {
+
 window.quizAssignmentId = "<%= @assignment ? @assignment.id : "" %>";
 $(document).ready(function() {
   $(".delete_quiz_link").click(function(event) {
     event.preventDefault();
     $(this).parents(".quiz").confirmDelete({
-      message: I18n.t('confirms.delete_quiz', "Are you sure you want to delete this quiz?"),
+      message: <%= jt('confirms.delete_quiz', "Are you sure you want to delete this quiz?") %>,
       url: $(this).attr('href')
     });
   });
 });
+});
 </script>
 <% end %>
-<% js_block do %><%= javascript_include_tag "tinymce/jscripts/tiny_mce/tiny_mce.js" %><% end %>
 
+<header class="quiz-header">
 <h2><%= @quiz && !@quiz.new_record? ? t('headers.edit_quiz', "Edit Quiz") : t('headers.create_new_quiz', "Create a New Quiz") %></h2>
 <div style="display: none;" id="quiz_urls">
   <a href="<%= context_url(@context, :context_quiz_url, @quiz.id) %>" class="update_quiz_url">&nbsp;</a>
@@ -283,14 +297,25 @@ $(document).ready(function() {
   <textarea style="display: block; width: 100%; margin: 0px auto; height: 125px;" id="quiz_description"><%= @quiz.description %></textarea>
 </div>
 <div style="display: none; margin-bottom: 5px;" id="show_question_details_wrap">
-  <input type="checkbox" id="show_question_details"/><label for="show_question_details"> <%= t('labels.show_question_details', "Show Question Details") %></label>
+  <input type="checkbox" id="show_question_details"
+         <%= "disabled='disabled'" if @quiz.quiz_questions.count > QuizzesController::QUIZ_QUESTIONS_DETAIL_LIMIT %>
+  />
+  <label for="show_question_details"> <%= t('labels.show_question_details', "Show Question Details") %></label>
+  <br/>
+  <% if @quiz.quiz_questions.count > QuizzesController::QUIZ_QUESTIONS_DETAIL_LIMIT %>
+  <span id='question-detail-disabled' class='hint'>
+    <%= t('hints.question_detail_disabled', 'NOTE: Question details not available when more than %{question_count}.',
+          :question_count => QuizzesController::QUIZ_QUESTIONS_DETAIL_LIMIT) %>
+  </span>
+  <% end %>
 </div>
-<div id="questions" class="question_editing brief">
+</header>
+<div id="questions" class="question_editing brief show_correct_answers">
   <% @quiz.root_entries.each do |question| %>
     <% if question[:entry_type] == "quiz_group" %>
       <%= render :partial => "quizzes/question_group", :object => question %>
     <% else %>
-      <%= render :partial => (@quiz.quiz_questions.count > 25 ? "quizzes/question_teaser" : "quizzes/display_question"), :object => question, :locals => {:editing => true, :asset_string => "quiz_question_#{question['id']}"} %>
+      <%= render :partial => (@quiz.quiz_questions.count > QuizzesController::QUIZ_QUESTIONS_DETAIL_LIMIT ? "quizzes/question_teaser" : "quizzes/display_question"), :object => question, :locals => {:editing => true, :asset_string => "quiz_question_#{question['id']}"} %>
     <% end %>
   <% end %>
 </div>
@@ -301,7 +326,7 @@ $(document).ready(function() {
 <%= render :partial => "quizzes/form_question", :object => nil %>
 <%= render :partial => "quizzes/question_group", :object => nil %>
 <%= render :partial => "quizzes/find_question_from_bank" %>
-<div style="text-align: center;" class="add_question question_editing">
+<div style="text-align: center; margin: -1px 1px 1px" class="add_question question_editing">
   <a href="#" class="add_question_link add"><%= t('links.new_question', "New Question") %></a>
   <a href="#" class="add_question_group_link add" style="margin-left: 20px; margin-right: 20px;"><%= t('links.new_question_group', "New Question Group") %></a>
   <% if feature_enabled?(:question_banks) %>

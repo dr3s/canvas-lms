@@ -19,6 +19,7 @@
 class EportfoliosController < ApplicationController
   include EportfolioPage
   before_filter :require_user, :only => [:index, :user_index]
+  before_filter :reject_student_view_student
   
   def index
     user_index
@@ -26,10 +27,10 @@ class EportfoliosController < ApplicationController
   end
   
   def user_index
-    @context = UserProfile.new(@current_user)
+    @context = @current_user.profile
     return unless tab_enabled?(UserProfile::TAB_EPORTFOLIOS)
     @active_tab = "eportfolios"
-    add_crumb(@current_user.short_name, profile_url)
+    add_crumb(@current_user.short_name, user_profile_url(@current_user))
     add_crumb(t(:crumb, "ePortfolios"))
     @portfolios = @current_user.eportfolios.active.find(:all, :order => :updated_at)
     render :action => 'user_index'
@@ -68,12 +69,16 @@ class EportfoliosController < ApplicationController
         @used_submission_ids = []
         @portfolio.eportfolio_entries.each do |entry|
           entry.content_sections.each do |s|
-            @used_submission_ids << s[:submission_id].to_i if s[:section_type] == "submission"
+            if s.is_a?(Hash) && s[:section_type] == "submission"
+              @used_submission_ids << s[:submission_id].to_i
+            end
           end
         end
       end
       @show_left_side = true
       eportfolio_page_attributes
+      js_env :folder_id => Folder.unfiled_folder(@current_user).id,
+             :context_code => @current_user.asset_string
       render :template => "eportfolios/show"
     end
   end
@@ -101,7 +106,7 @@ class EportfoliosController < ApplicationController
       respond_to do |format|
         if @portfolio.destroy
           flash[:notice] = t('notices.deleted', "Portfolio successfully deleted")
-          format.html { redirect_to profile_url }
+          format.html { redirect_to user_profile_url(@current_user) }
           format.json { render :json => @portfolio.to_json }
         else
           format.html { render :action => "delete" }
@@ -151,26 +156,24 @@ class EportfoliosController < ApplicationController
         @attachment.destroy!
         @attachment = nil
       end
-      
+
       if !@attachment
         @attachment = @portfolio.attachments.build(:display_name => zip_filename)
         @attachment.workflow_state = 'to_be_zipped'
         @attachment.file_state = '0'
         @attachment.save!
-      end
-      if params[:compile] && @attachment.to_be_zipped?
         ContentZipper.send_later_enqueue_args(:process_attachment, { :priority => Delayed::LOW_PRIORITY, :max_attempts => 1 }, @attachment)
         render :json => @attachment.to_json
       else
         respond_to do |format|
           if @attachment.zipped?
             if Attachment.s3_storage?
-              format.html { redirect_to @attachment.cacheable_s3_url }
-              format.zip { redirect_to @attachment.cacheable_s3_url }
+              format.html { redirect_to @attachment.cacheable_s3_inline_url }
+              format.zip { redirect_to @attachment.cacheable_s3_inline_url }
             else
               cancel_cache_buster
-              format.html { send_file(@attachment.full_filename, :type => @attachment.content_type, :disposition => 'inline') }
-              format.zip { send_file(@attachment.full_filename, :type => @attachment.content_type, :disposition => 'inline') }
+              format.html { send_file(@attachment.full_filename, :type => @attachment.content_type_with_encoding, :disposition => 'inline') }
+              format.zip { send_file(@attachment.full_filename, :type => @attachment.content_type_with_encoding, :disposition => 'inline') }
             end
             format.json { render :json => @attachment.to_json(:methods => :readable_size) }
           else
@@ -186,22 +189,22 @@ class EportfoliosController < ApplicationController
   
   def public_feed
     @portfolio = Eportfolio.find(params[:eportfolio_id])
-    respond_to do |format|
-      if @portfolio.public || params[:verifier] == @portfolio.uuid
-        @entries = @portfolio.eportfolio_entries.find(:all, :order => 'eportfolio_entries.created_at DESC')
-        feed = Atom::Feed.new do |f|
-          f.title = t(:title, "%{portfolio_name} Feed", :portfolio_name => @portfolio.name)
-          f.links << Atom::Link.new(:href => eportfolio_url(@portfolio.id))
-          f.updated = @entries.first.updated_at rescue Time.now
-          f.id = eportfolio_url(@portfolio.id)
-        end
-        @entries.each do |e|
-          feed.entries << e.to_atom(:private => params[:verifier] == @portfolio.uuid)
-        end
-        format.atom { render :text => feed.to_xml }
-      else
-        authorized_action(nil, nil, :bad_permission)
+    if @portfolio.public || params[:verifier] == @portfolio.uuid
+      @entries = @portfolio.eportfolio_entries.find(:all, :order => 'eportfolio_entries.created_at DESC')
+      feed = Atom::Feed.new do |f|
+        f.title = t(:title, "%{portfolio_name} Feed", :portfolio_name => @portfolio.name)
+        f.links << Atom::Link.new(:href => eportfolio_url(@portfolio.id), :rel => 'self')
+        f.updated = @entries.first.updated_at rescue Time.now
+        f.id = eportfolio_url(@portfolio.id)
       end
+      @entries.each do |e|
+        feed.entries << e.to_atom(:private => params[:verifier] == @portfolio.uuid)
+      end
+      respond_to do |format|
+        format.atom { render :text => feed.to_xml }
+      end
+    else
+      authorized_action(nil, nil, :bad_permission)
     end
   end
 end

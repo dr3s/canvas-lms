@@ -1,5 +1,16 @@
-I18n.scoped 'gradebook2', (I18n) ->
-  class @CurveGradesDialog
+define [
+  'i18n!gradebook2'
+  'jquery'
+  'jst/CurveGradesDialog'
+  'jquery.disableWhileLoading'
+  'jquery.instructure_forms'
+  'jqueryui/dialog'
+  'jquery.instructure_misc_plugins'
+  'compiled/jquery/fixDialogButtons'
+  'vendor/jquery.ba-tinypubsub'
+], (I18n, $, curveGradesDialogTemplate) ->
+
+  class CurveGradesDialog
     constructor: (@assignment, @gradebook) ->
       locals =
         assignment: @assignment
@@ -7,7 +18,7 @@ I18n.scoped 'gradebook2', (I18n) ->
         middleScore: parseInt((@assignment.points_possible || 0) * 0.6)
         showOutOf: @assignment.points_possible >= 0
       # the dialog will be shared across all instantiation, so make it a prototype property
-      @$dialog = $(Template('CurveGradesDialog', locals))
+      @$dialog = $(curveGradesDialogTemplate(locals))
       @$dialog
         .formSubmit
           disableWhileLoading: true
@@ -21,7 +32,8 @@ I18n.scoped 'gradebook2', (I18n) ->
               data[pre + "[grade]"] = curves[idx]
               cnt++
             if cnt == 0
-              @$dialog.errorBox I18n.t("errors.none_to_update", "None to Update")
+              errorBox = @$dialog.errorBox I18n.t("errors.none_to_update", "None to Update")
+              setTimeout((-> errorBox.fadeOut(-> errorBox.remove())), 3500)
               return false
             data
           success: (data) =>
@@ -29,7 +41,7 @@ I18n.scoped 'gradebook2', (I18n) ->
             #need to get rid of root object becuase it is coming from old, pre-api xhr
             submissions = (datum.submission for datum in data)
             $.publish 'submissions_updated', [submissions]
-            alert I18n.t("alerts.scores_updated", { one: "1 Student score updated", other: "%{count} Student scores updated"}, count: data.length)            
+            alert I18n.t("alerts.scores_updated", { one: "1 Student score updated", other: "%{count} Student scores updated"}, count: data.length)
         .dialog
           width: 350
           modal: true
@@ -37,24 +49,26 @@ I18n.scoped 'gradebook2', (I18n) ->
           open: @curve
           close: => @$dialog.remove()
         .fixDialogButtons()
-      
+
       @$dialog.find("#middle_score").bind "blur change keyup focus", @curve
       @$dialog.find("#assign_blanks").change @curve
 
     curve: =>
-      idx = 0
-      scores = {}
-      data = @$dialog.getFormData()
-      users_for_score = []
-      scoreCount = 0
-      middleScore = parseInt($("#middle_score").val(), 10)
-      middleScore = (middleScore / @assignment.points_possible)
+      idx                  = 0
+      scores               = {}
+      data                 = @$dialog.getFormData()
+      users_for_score      = []
+      scoreCount           = 0
+      middleScore          = parseInt($("#middle_score").val(), 10)
+      middleScore          = (middleScore / @assignment.points_possible)
+      should_assign_blanks = $('#assign_blanks').prop('checked')
+
       return  if isNaN(middleScore)
 
       for idx, student of @gradebook.students
         score = student["assignment_#{@assignment.id}"].score
         score = @assignment.points_possible if score > @assignment.points_possible
-        score = 0 if score < 0
+        score = 0 if score < 0 or !score? and should_assign_blanks
         users_for_score[parseInt(score, 10)] = users_for_score[parseInt(score, 10)] or []
         users_for_score[parseInt(score, 10)].push [ idx, (score or 0) ]
         scoreCount++

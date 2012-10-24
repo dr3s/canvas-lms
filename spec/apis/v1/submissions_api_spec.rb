@@ -17,8 +17,9 @@
 #
 
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
+require File.expand_path(File.dirname(__FILE__) + '/../file_uploads_spec_helper')
 
-describe SubmissionsApiController, :type => :integration do
+describe 'Submissions API', :type => :integration do
 
   def submit_homework(assignment, student, opts = {:body => "test!"})
     @submit_homework_time ||= Time.zone.at(0)
@@ -60,7 +61,8 @@ describe SubmissionsApiController, :type => :integration do
       "submission_type"=>nil,
       "submission_comments"=>[],
       "grade_matches_current_submission"=>nil,
-      "score"=>nil
+      "score"=>nil,
+      "workflow_state"=>nil
     }
   end
 
@@ -117,7 +119,7 @@ describe SubmissionsApiController, :type => :integration do
 
     it "should post to submissions" do
       @a1 = @course.assignments.create!({:title => 'assignment1', :grading_type => 'percent', :points_possible => 10})
-      raw_api_call(:put,
+      json = raw_api_call(:put,
                       "/api/v1/sections/#{@default_section.id}/assignments/#{@a1.id}/submissions/#{@student1.id}",
       { :controller => 'submissions_api', :action => 'update',
         :format => 'json', :section_id => @default_section.id.to_s,
@@ -125,15 +127,19 @@ describe SubmissionsApiController, :type => :integration do
         { :submission => { :posted_grade => '75%' } })
       response.status.should == "404 Not Found"
 
+      expect {
       json = api_call(:put,
                       "/api/v1/sections/sis_section_id:my-section-sis-id/assignments/#{@a1.id}/submissions/#{@student1.id}",
       { :controller => 'submissions_api', :action => 'update',
         :format => 'json', :section_id => 'sis_section_id:my-section-sis-id',
         :assignment_id => @a1.id.to_s, :id => @student1.id.to_s },
         { :submission => { :posted_grade => '75%' } })
+        # never more than 1 job added, because it's in a Delayed::Batch
+      }.to change { Delayed::Job.jobs_count(:current) }.by(1)
 
       Submission.count.should == 2
       @submission = Submission.last(:order => :id)
+      @submission.grader.should == @teacher
 
       json['score'].should == 7.5
       json['grade'].should == '75%'
@@ -228,7 +234,7 @@ describe SubmissionsApiController, :type => :integration do
     @assignment.submit_homework(@student, :submission_type => 'discussion_topic')
     se2 = @topic.discussion_entries.create!(:message => 'student 1', :user => @student)
     @assignment.submit_homework(@student, :submission_type => 'discussion_topic')
-    e1 = @topic.discussion_entries.create!(:message => 'another entry', :user => @user)
+    e2 = @topic.discussion_entries.create!(:message => 'another entry', :user => @user)
 
     json = api_call(:get,
           "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@student.id}.json",
@@ -241,6 +247,8 @@ describe SubmissionsApiController, :type => :integration do
         'id' => se1.id,
         'message' => 'sub 1',
         'user_id' => @student.id,
+        'read_state' => 'unread',
+        'parent_id' => e1.id,
         'created_at' => se1.created_at.as_json,
         'updated_at' => se1.updated_at.as_json,
         'user_name' => 'User',
@@ -249,6 +257,8 @@ describe SubmissionsApiController, :type => :integration do
         'id' => se2.id,
         'message' => 'student 1',
         'user_id' => @student.id,
+        'read_state' => 'unread',
+        'parent_id' => nil,
         'created_at' => se2.created_at.as_json,
         'updated_at' => se2.updated_at.as_json,
         'user_name' => 'User',
@@ -289,7 +299,7 @@ describe SubmissionsApiController, :type => :integration do
     @assignment.submit_homework(@student, :submission_type => 'discussion_topic')
     se2 = @child_topic.discussion_entries.create!(:message => 'student 1', :user => @student)
     @assignment.submit_homework(@student, :submission_type => 'discussion_topic')
-    e1 = @child_topic.discussion_entries.create!(:message => 'another entry', :user => @user)
+    e2 = @child_topic.discussion_entries.create!(:message => 'another entry', :user => @user)
 
     json = api_call(:get,
           "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@student.id}.json",
@@ -303,6 +313,8 @@ describe SubmissionsApiController, :type => :integration do
         'message' => 'sub 1',
         'user_id' => @student.id,
         'user_name' => 'User',
+        'read_state' => 'unread',
+        'parent_id' => e1.id,
         'created_at' => se1.created_at.as_json,
         'updated_at' => se1.updated_at.as_json,
       },
@@ -311,6 +323,8 @@ describe SubmissionsApiController, :type => :integration do
         'message' => 'student 1',
         'user_id' => @student.id,
         'user_name' => 'User',
+        'read_state' => 'unread',
+        'parent_id' => nil,
         'created_at' => se2.created_at.as_json,
         'updated_at' => se2.updated_at.as_json,
       }].sort_by { |h| h['user_id'] }
@@ -364,7 +378,9 @@ describe SubmissionsApiController, :type => :integration do
                       :assignment_id => a1.id.to_s, :id => student1.id.to_s },
                     { :include => %w(submission_comments) })
 
-    json.should == {"grade"=>"A-",
+    json.should == {
+        "id"=>sub1.id,
+        "grade"=>"A-",
         "body"=>"test!",
         "assignment_id" => a1.id,
         "submitted_at"=>"1970-01-01T01:00:00Z",
@@ -386,7 +402,8 @@ describe SubmissionsApiController, :type => :integration do
            "created_at"=>comment.created_at.as_json,
            "author_name"=>"User",
            "author_id"=>student1.id}],
-        "score"=>13.5}
+        "score"=>13.5,
+        "workflow_state"=>"graded"}
 
     # can't access other students' submissions
     @user = student2
@@ -397,7 +414,22 @@ describe SubmissionsApiController, :type => :integration do
                       :assignment_id => a1.id.to_s, :id => student1.id.to_s },
                     { :include => %w(submission_comments) })
     response.status.should =~ /401/
-    JSON.parse(response.body).should == { 'status' => 'unauthorized' }
+    JSON.parse(response.body).should == {"status"=>"unauthorized", "message"=>"You are not authorized to perform that action."}
+  end
+
+  it "should api translate online_text_entry submissions" do
+    student1 = user(:active_all => true)
+    course_with_teacher(:active_all => true)
+    @course.enroll_student(student1).accept!
+    a1 = @course.assignments.create!(:title => 'assignment1', :grading_type => 'letter_grade', :points_possible => 15)
+    should_translate_user_content(@course) do |content|
+      sub1 = submit_homework(a1, student1, :body => content)
+      json = api_call(:get, "/api/v1/courses/#{@course.id}/assignments/#{a1.id}/submissions/#{student1.id}.json",
+                    { :controller => "submissions_api", :action => "show",
+                      :format => "json", :course_id => @course.id.to_s,
+                      :assignment_id => a1.id.to_s, :id => student1.id.to_s })
+      json["body"]
+    end
   end
 
   it "should allow retrieving attachments without a session" do
@@ -479,9 +511,13 @@ describe SubmissionsApiController, :type => :integration do
             :format => 'json', :course_id => @course.id.to_s,
             :assignment_id => a1.id.to_s },
           { :include => %w(submission_history submission_comments rubric_assessment) })
-
+    
+    sub1.reload
+    sub2.reload
+    
     res =
-      [{"grade"=>"A-",
+      [{"id"=>sub1.id,
+        "grade"=>"A-",
         "body"=>"test!",
         "assignment_id" => a1.id,
         "submitted_at"=>"1970-01-01T03:00:00Z",
@@ -492,10 +528,21 @@ describe SubmissionsApiController, :type => :integration do
            { "content-type" => "application/loser",
              "url" => "http://www.example.com/files/#{sub1.attachments.first.id}/download?download_frd=1&verifier=#{sub1.attachments.first.uuid}",
              "filename" => "unknown.loser",
-             "display_name" => "unknown.loser" },
+             "display_name" => "unknown.loser",
+             "id" => sub1.attachments.first.id,
+             "size" => sub1.attachments.first.size,
+             'unlock_at' => nil,
+             'locked' => false,
+             'hidden' => false,
+             'lock_at' => nil,
+             'locked_for_user' => false,
+             'hidden_for_user' => false,
+             'created_at' => sub1.attachments.first.created_at.as_json,
+             'updated_at' => sub1.attachments.first.updated_at.as_json, },
          ],
         "submission_history"=>
-         [{"grade"=>nil,
+         [{"id"=>sub1.id,
+           "grade"=>nil,
            "body"=>"test!",
            "assignment_id" => a1.id,
            "submitted_at"=>"1970-01-01T01:00:00Z",
@@ -505,9 +552,11 @@ describe SubmissionsApiController, :type => :integration do
            "user_id"=>student1.id,
            "preview_url" => "http://www.example.com/courses/#{@course.id}/assignments/#{a1.id}/submissions/#{student1.id}?preview=1&version=0",
            "grade_matches_current_submission"=>nil,
-           "score"=>nil},
-          {"grade"=>nil,
-            "assignment_id" => a1.id,
+           "score"=>nil,
+           "workflow_state" => "submitted"},
+          {"id"=>sub1.id,
+           "grade"=>nil,
+           "assignment_id" => a1.id,
            "media_comment" =>
             { "media_type"=>"video",
               "media_id"=>"54321",
@@ -522,9 +571,11 @@ describe SubmissionsApiController, :type => :integration do
            "user_id"=>student1.id,
            "preview_url" => "http://www.example.com/courses/#{@course.id}/assignments/#{a1.id}/submissions/#{student1.id}?preview=1&version=1",
            "grade_matches_current_submission"=>nil,
-           "score"=>nil},
-          {"grade"=>"A-",
-            "assignment_id" => a1.id,
+           "score"=>nil,
+           "workflow_state" => "submitted"},
+          {"id"=>sub1.id,
+           "grade"=>"A-",
+           "assignment_id" => a1.id,
            "media_comment" =>
             { "media_type"=>"video",
               "media_id"=>"54321","content-type" => "video/mp4",
@@ -535,7 +586,17 @@ describe SubmissionsApiController, :type => :integration do
               { "content-type" => "application/loser",
                 "url" => "http://www.example.com/files/#{sub1.attachments.first.id}/download?download_frd=1&verifier=#{sub1.attachments.first.uuid}",
                 "filename" => "unknown.loser",
-                "display_name" => "unknown.loser" },
+                "display_name" => "unknown.loser",
+                "id" => sub1.attachments.first.id,
+                "size" => sub1.attachments.first.size,
+                'unlock_at' => nil,
+                'locked' => false,
+                'hidden' => false,
+                'lock_at' => nil,
+                'locked_for_user' => false,
+                'hidden_for_user' => false,
+                'created_at' => sub1.attachments.first.created_at.as_json,
+                'updated_at' => sub1.attachments.first.updated_at.as_json, },
             ],
            "body"=>"test!",
            "submitted_at"=>"1970-01-01T03:00:00Z",
@@ -545,7 +606,8 @@ describe SubmissionsApiController, :type => :integration do
            "user_id"=>student1.id,
            "preview_url" => "http://www.example.com/courses/#{@course.id}/assignments/#{a1.id}/submissions/#{student1.id}?preview=1&version=2",
            "grade_matches_current_submission"=>true,
-           "score"=>13.5}],
+           "score"=>13.5,
+           "workflow_state" => "graded"}],
         "attempt"=>3,
         "url"=>nil,
         "submission_type"=>"online_text_entry",
@@ -568,15 +630,18 @@ describe SubmissionsApiController, :type => :integration do
            "content-type" => "video/mp4",
            "url" => "http://www.example.com/users/#{@user.id}/media_download?entryId=54321&redirect=1&type=mp4",
            "display_name" => nil },
-        "score"=>13.5},
-       {"grade"=>"F",
+        "score"=>13.5,
+        "workflow_state"=>"graded"},
+       {"id"=>sub2.id,
+        "grade"=>"F",
         "assignment_id" => a1.id,
         "body"=>nil,
         "preview_url" => "http://www.example.com/courses/#{@course.id}/assignments/#{a1.id}/submissions/#{student2.id}?preview=1",
         "grade_matches_current_submission"=>true,
         "submitted_at"=>"1970-01-01T04:00:00Z",
         "submission_history"=>
-         [{"grade"=>"F",
+         [{"id"=>sub2.id,
+           "grade"=>"F",
            "assignment_id" => a1.id,
            "body"=>nil,
            "submitted_at"=>"1970-01-01T04:00:00Z",
@@ -585,19 +650,42 @@ describe SubmissionsApiController, :type => :integration do
            "submission_type"=>"online_url",
            "user_id"=>student2.id,
            "preview_url" => "http://www.example.com/courses/#{@course.id}/assignments/#{a1.id}/submissions/#{student2.id}?preview=1&version=0",
-          "grade_matches_current_submission"=>true,
+           "grade_matches_current_submission"=>true,
            "attachments" =>
             [
              {"content-type" => "image/png",
               "display_name" => "ss2.png",
               "filename" => "ss2.png",
-              "url" => "http://www.example.com/files/#{sub2.attachments.first.id}/download?download_frd=1&verifier=#{sub2.attachments.first.uuid}",},
+              "url" => "http://www.example.com/files/#{sub2.attachments.first.id}/download?download_frd=1&verifier=#{sub2.attachments.first.uuid}",
+              "id" => sub2.attachments.first.id,
+              "size" => sub2.attachments.first.size,
+              'unlock_at' => nil,
+              'locked' => false,
+              'hidden' => false,
+              'lock_at' => nil,
+              'locked_for_user' => false,
+              'hidden_for_user' => false,
+              'created_at' => sub2.attachments.first.created_at.as_json,
+              'updated_at' => sub2.attachments.first.updated_at.as_json,
+            },
              {"content-type" => "image/png",
               "display_name" => "snapshot.png",
               "filename" => "snapshot.png",
-              "url" => "http://www.example.com/files/#{sub2.attachment.id}/download?download_frd=1&verifier=#{sub2.attachment.uuid}",},
+              "url" => "http://www.example.com/files/#{sub2.attachment.id}/download?download_frd=1&verifier=#{sub2.attachment.uuid}",
+              "id" => sub2.attachment.id,
+              "size" => sub2.attachment.size,
+              'unlock_at' => nil,
+              'locked' => false,
+              'hidden' => false,
+              'lock_at' => nil,
+              'locked_for_user' => false,
+              'hidden_for_user' => false,
+              'created_at' => sub2.attachments.first.created_at.as_json,
+              'updated_at' => sub2.attachments.first.updated_at.as_json,
+              },
             ],
-           "score"=>9}],
+           "score"=>9,
+           "workflow_state" => "graded"}],
         "attempt"=>1,
         "url"=>"http://www.instructure.com",
         "submission_type"=>"online_url",
@@ -607,17 +695,40 @@ describe SubmissionsApiController, :type => :integration do
           {"content-type" => "image/png",
            "display_name" => "ss2.png",
            "filename" => "ss2.png",
-           "url" => "http://www.example.com/files/#{sub2.attachments.first.id}/download?download_frd=1&verifier=#{sub2.attachments.first.uuid}",},
+           "url" => "http://www.example.com/files/#{sub2.attachments.first.id}/download?download_frd=1&verifier=#{sub2.attachments.first.uuid}",
+              "id" => sub2.attachments.first.id,
+              "size" => sub2.attachments.first.size,
+             'unlock_at' => nil,
+             'locked' => false,
+             'hidden' => false,
+             'lock_at' => nil,
+             'locked_for_user' => false,
+             'hidden_for_user' => false,
+             'created_at' => sub2.attachments.first.created_at.as_json,
+             'updated_at' => sub2.attachments.first.updated_at.as_json,
+         },
           {"content-type" => "image/png",
            "display_name" => "snapshot.png",
            "filename" => "snapshot.png",
-           "url" => "http://www.example.com/files/#{sub2.attachment.id}/download?download_frd=1&verifier=#{sub2.attachment.uuid}",},
+           "url" => "http://www.example.com/files/#{sub2.attachment.id}/download?download_frd=1&verifier=#{sub2.attachment.uuid}",
+           "id" => sub2.attachment.id,
+           "size" => sub2.attachment.size,
+           'unlock_at' => nil,
+           'locked' => false,
+           'hidden' => false,
+           'lock_at' => nil,
+           'locked_for_user' => false,
+           'hidden_for_user' => false,
+           'created_at' => sub2.attachments.first.created_at.as_json,
+           'updated_at' => sub2.attachments.first.updated_at.as_json,
+           },
          ],
         "submission_comments"=>[],
         "score"=>9,
         "rubric_assessment"=>
          {"crit2"=>{"comments"=>"Hmm", "points"=>2},
-          "crit1"=>{"comments"=>nil, "points"=>7}}}]
+          "crit1"=>{"comments"=>nil, "points"=>7}},
+        "workflow_state"=>"graded"}]
     json.sort_by { |h| h['user_id'] }.should == res.sort_by { |h| h['user_id'] }
   end
 
@@ -1065,6 +1176,10 @@ describe SubmissionsApiController, :type => :integration do
     submit_with_grade({ :grading_type => 'pass_fail', :points_possible => 12 }, '50%', nil, nil)
   end
 
+  it "should set complete for zero point assignments" do
+    submit_with_grade({ :grading_type => 'pass_fail', :points_possible => 0 }, 'pass', 0, 'complete')
+  end
+
   def submit_with_grade(assignment_opts, param, score, grade)
     student = user(:active_all => true)
     course_with_teacher(:active_all => true)
@@ -1122,7 +1237,8 @@ describe SubmissionsApiController, :type => :integration do
         :points=>2,
         :learning_outcome_id=>nil,
         :id=>"rat1",
-        :comments=>"Rock on"}]
+        :comments=>"Rock on",
+        :comments_html=>"Rock on"}]
   end
 
   it "should allow posting a comment on a submission" do
@@ -1144,6 +1260,35 @@ describe SubmissionsApiController, :type => :integration do
     @submission = Submission.first
     json['submission_comments'].size.should == 1
     json['submission_comments'].first['comment'].should == 'ohai!'
+  end
+
+  it "should allow posting a group comment on a submission" do
+    student1 = user(:active_all => true)
+    student2 = user(:active_all => true)
+    course_with_teacher(:active_all => true)
+    @course.enroll_student(student1).accept!
+    @course.enroll_student(student2).accept!
+    group_category = @course.group_categories.create(:name => "Category")
+    @group = @course.groups.create(:name => "Group", :group_category => group_category, :context => @course)
+    @group.users = [student1, student2]
+    @assignment = @course.assignments.create!(:title => 'assignment1', :grading_type => 'points', :points_possible => 12, :group_category => group_category)
+    submit_homework(@assignment, student1)
+
+    json = api_call(:put,
+          "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{student1.id}.json",
+          { :controller => 'submissions_api', :action => 'update',
+            :format => 'json', :course_id => @course.id.to_s,
+            :assignment_id => @assignment.id.to_s, :id => student1.id.to_s },
+          { :comment =>
+            { :text_comment => "ohai!", :group_comment => "1" } })
+    json['submission_comments'].size.should == 1
+    json['submission_comments'].first['comment'].should == 'ohai!'
+
+    Submission.count.should == 2
+    Submission.all.each do |submission|
+      submission.submission_comments.size.should eql 1
+      submission.submission_comments.first.comment.should eql 'ohai!'
+    end
   end
 
   it "should allow posting a media comment on a submission, given a kaltura id" do
@@ -1415,6 +1560,147 @@ describe SubmissionsApiController, :type => :integration do
       user5 = user :account => account1
       user6 = user :account => account2
       @controller.map_user_ids(["sis_login_id:sisuser1@example.com", "sis_login_id:sisuser2@example.com", "sis_login_id:sisuser3@example.com", user5.id, user6.id]).sort.should == [user1.id, user3.id, user5.id, user6.id].sort
+    end
+  end
+
+  context "create" do
+    before do
+      course_with_student(:active_all => true)
+      assignment_model(:course => @course, :submission_types => "online_url", :points_possible => 12)
+      @url = "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions"
+      @args = { :controller => "submissions", :action => "create", :format => "json", :course_id => @course.id.to_s, :assignment_id => @assignment.id.to_s }
+    end
+
+    it "should reject a submission by a non-student" do
+      @user = course_with_teacher(:course => @course).user
+      json = api_call(:post, @url, @args, { :submission => { :submission_type => "online_url", :url => "www.example.com" } }, {}, :expected_status => 401)
+    end
+
+    it "should reject a request with an invalid submission_type" do
+      json = api_call(:post, @url, @args, { :submission => { :submission_type => "blergh" } }, {}, :expected_status => 400)
+      json['message'].should == "Invalid submission[submission_type] given"
+    end
+
+    it "should reject a submission_type not allowed by the assignment" do
+      json = api_call(:post, @url, @args, { :submission => { :submission_type => "media_recording" } }, {}, :expected_status => 400)
+      json['message'].should == "Invalid submission[submission_type] given"
+    end
+
+    it "should reject mismatched submission_type and params" do
+      json = api_call(:post, @url, @args, { :submission => { :submission_type => "online_url", :body => "some html text" } }, {}, :expected_status => 400)
+      json['message'].should == "Invalid parameters for submission_type online_url. Required: submission[url]"
+    end
+
+    it "should work with section ids" do
+      @section = @course.default_section
+      json = api_call(:post, "/api/v1/sections/#{@section.id}/assignments/#{@assignment.id}/submissions", { :controller => "submissions", :action => "create", :format => "json", :section_id => @section.id.to_s, :assignment_id => @assignment.id.to_s }, { :submission => { :submission_type => "online_url", :url => "www.example.com/a/b?q=1" } })
+      @submission = @assignment.submissions.find_by_user_id(@user.id)
+      @submission.should be_present
+      @submission.url.should == 'http://www.example.com/a/b?q=1'
+    end
+
+    describe "valid submissions" do
+      def do_submit(opts)
+        json = api_call(:post, @url, @args, { :submission => opts })
+        response['Location'].should == "http://www.example.com/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@user.id}"
+        @submission = @assignment.submissions.find_by_user_id(@user.id)
+        @submission.should be_present
+        json.slice('user_id', 'assignment_id', 'score', 'grade').should == {
+          'user_id' => @user.id,
+          'assignment_id' => @assignment.id,
+          'score' => nil,
+          'grade' => nil,
+        }
+        json
+      end
+
+      it "should create a url submission" do
+        json = do_submit(:submission_type => "online_url", :url => "www.example.com/a/b?q=1")
+        @submission.url.should == 'http://www.example.com/a/b?q=1'
+        json['url'].should == @submission.url
+      end
+
+      it "should create with an initial comment" do
+        json = api_call(:post, @url, @args, { :comment => { :text_comment => "ohai teacher" }, :submission => { :submission_type => "online_url", :url => "http://www.example.com/a/b" } })
+        @submission = @assignment.submissions.find_by_user_id(@user.id)
+        @submission.submission_comments.size.should == 1
+        @submission.submission_comments.first.attributes.slice('author_id', 'comment').should == {
+          'author_id' => @user.id,
+          'comment' => 'ohai teacher',
+        }
+        json['url'].should == "http://www.example.com/a/b"
+      end
+
+      it "should create a online text submission" do
+        @assignment.update_attributes(:submission_types => 'online_text_entry')
+        json = do_submit(:submission_type => 'online_text_entry', :body => %{<p>
+          This is <i>some</i> text. The <script src='evil.com'></script> sanitization will take effect.
+        </p>})
+        json['body'].should == %{<p>
+          This is <i>some</i> text. The  sanitization will take effect.
+        </p>}
+        json['body'].should == @submission.body
+      end
+
+      it "should create a file upload submission" do
+        @assignment.update_attributes(:submission_types => 'online_upload')
+        a1 = attachment_model(:context => @user)
+        a2 = attachment_model(:context => @user)
+        json = do_submit(:submission_type => 'online_upload', :file_ids => [a1.id, a2.id])
+        json['attachments'].map { |a| a['url'] }.should == [ file_download_url(a1, :verifier => a1.uuid, :download => '1', :download_frd => '1'), file_download_url(a2, :verifier => a2.uuid, :download => '1', :download_frd => '1') ]
+      end
+
+      it "should create a media comment submission" do
+        @assignment.update_attributes(:submission_types => "media_recording")
+        media_object(:media_id => "3232", :media_type => "audio")
+        json = do_submit(:submission_type => "media_recording", :media_comment_id => "3232", :media_comment_type => "audio")
+        json['media_comment'].slice('media_id', 'media_type').should == {
+          'media_id' => '3232',
+          'media_type' => 'audio',
+        }
+      end
+    end
+
+    context "submission file uploads" do
+      before do
+        @assignment.update_attributes(:submission_types => 'online_upload')
+        @student1 = @student
+        course_with_student(:course => @course)
+        @context = @course
+        @student2 = @student
+        @user = @student1
+        @always_scribd = true
+      end
+
+      it_should_behave_like "file uploads api"
+      it_should_behave_like "file uploads api without quotas"
+
+      def preflight(preflight_params)
+        api_call(:post, "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@student1.id}/files",
+          { :controller => "submissions_api", :action => "create_file", :format => "json", :course_id => @course.to_param, :assignment_id => @assignment.to_param, :user_id => @student1.to_param },
+          preflight_params)
+      end
+
+      def has_query_exemption?
+        true
+      end
+      
+      it "should reject uploading files to other students' submissions" do
+        json = api_call(:post, "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@student2.id}/files",
+                        { :controller => "submissions_api", :action => "create_file", :format => "json", :course_id => @course.to_param, :assignment_id => @assignment.to_param, :user_id => @student2.to_param }, {}, {}, { :expected_status => 401 })
+        json["message"].should match(/not authorized/i)
+      end
+    end
+
+    it "should reject invalid urls" do
+      json = api_call(:post, @url, @args, { :submission => { :submission_type => "online_url", :url => "ftp://ftp.example.com/a/b" } }, {}, :expected_status => 400)
+    end
+
+    it "should reject attachment ids not belonging to the user" do
+      @assignment.update_attributes(:submission_types => 'online_upload')
+      a1 = attachment_model(:context => @course)
+      json = api_call(:post, @url, @args, { :submission => { :submission_type => "online_upload", :file_ids => [a1.id] } }, {}, :expected_status => 400)
+      json['message'].should == 'No valid file ids given'
     end
   end
 

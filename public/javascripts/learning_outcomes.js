@@ -15,7 +15,24 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-I18n.scoped("learning_outcomes", function(I18n) {
+
+define([
+  'i18n!learning_outcomes',
+  'jquery' /* $ */,
+  'find_outcome',
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* formSubmit, fillFormData, formErrors */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags, /\$\.underscore/ */,
+  'jquery.instructure_misc_plugins' /* confirmDelete, showIf */,
+  'jquery.loadingImg' /* loadingImage */,
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'compiled/tinymce',
+  'tinymce.editor_box' /* editorBox */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'jqueryui/sortable' /* /\.sortable/ */
+], function(I18n, $, find_outcome) {
+
   var outcomes = {
     ratingCounter: 0,
     updateOutcome: function(outcome, $outcome) {
@@ -138,7 +155,7 @@ I18n.scoped("learning_outcomes", function(I18n) {
         $("#outcomes .outcome_group:first").append($group.show());
         $("#outcomes .outcome_group:first .child_outcomes").sortable('refresh');
         $group.find('.child_outcomes').sortable(outcomes.sortableOptions);
-        $(".outcome_group .child_outcomes").sortable('option', 'connectWith', '.child_outcomes');
+        $("#outcomes .outcome_group .child_outcomes").sortable('option', 'connectWith', '.child_outcomes');
       }
       group.asset_string = $.underscore("learning_outcome_group_" + group.id);
       $group.find("textarea.description").val(group.description);
@@ -166,10 +183,10 @@ I18n.scoped("learning_outcomes", function(I18n) {
       outcomes.hideEditOutcomeGroup();
       if(!$group || $group.length === 0) {
         $group = $("#group_blank").clone(true).attr('id', 'group_new');
-        $("#outcomes .child_outcomes:first").append($group.show());
         $("#outcomes .outcome_group:first .child_outcomes").sortable('refresh');
+        $("#outcomes .child_outcomes:first").append($group.show());
         $group.find('.child_outcomes').sortable(outcomes.sortableOptions);
-        $(".outcome_group .child_outcomes").sortable('option', 'connectWith', '.child_outcomes');
+        $("#outcomes .outcome_group .child_outcomes").sortable('option', 'connectWith', '.child_outcomes');
       }
       var $form = $("#edit_outcome_group_form");
       $form.attr('action', $group.find(".edit_group_link").attr('href'));
@@ -207,7 +224,7 @@ I18n.scoped("learning_outcomes", function(I18n) {
             id     = $group.children('.header').getTemplateData({ textValues: [ 'asset_string', 'id' ] }).id,
             data   = {},
             url    = $.replaceTags($("#outcome_links .reorder_items_url").attr('href'), 'id', id),
-            assets = $group.find('.child_outcomes').children('.learning_outcome, .outcome_group').map(function(i, el){
+            assets = $group.children('.child_outcomes').children('.learning_outcome, .outcome_group').map(function(i, el){
               return $(el).children('.header').getTemplateData({ textValues: [ 'asset_string', 'id' ] }).asset_string;
             });
         for (var _i = 0, _max = assets.length; _i < _max; _i++){
@@ -220,11 +237,10 @@ I18n.scoped("learning_outcomes", function(I18n) {
   $(document).ready(function() {
     $("#outcome_information_link").click(function(event) {
       event.preventDefault();
-      $("#outcome_criterion_dialog").dialog('close').dialog({
-        autoOpen: false,
+      $("#outcome_criterion_dialog").dialog({
         title: I18n.t("outcome_criterion", "Learning Outcome Criterion"),
         width: 400
-      }).dialog('open');
+      });
     });
     $(".show_details_link,.hide_details_link").click(function(event, callback) {
       event.preventDefault();
@@ -321,12 +337,11 @@ I18n.scoped("learning_outcomes", function(I18n) {
     $(".find_outcome_link").click(function(event) {
       var $dialog = $("#find_outcome_dialog");
       event.preventDefault();
-      $dialog.dialog('close').dialog({
-        autoOpen: true,
+      $dialog.dialog({
         width: 600,
         height: 350,
         title: I18n.t("find_existing_outcome", 'Find Existing Outcome')
-      }).dialog('open');
+      });
       if(!$dialog.hasClass('loaded')) {
         $dialog.find(".loading_message").text(I18n.t("loading_outcomes", "Loading outcomes..."));
         var url = $dialog.find(".outcomes_url").attr('href');

@@ -19,11 +19,12 @@
 # @API Accounts
 class AccountsController < ApplicationController
   before_filter :require_user, :only => [:index]
+  before_filter :reject_student_view_student
   before_filter :get_context
 
   include Api::V1::Account
 
-  # @API
+  # @API List accounts
   # List accounts that the current user can view or manage.  Typically,
   # students and even teachers will get an empty list in response, only
   # account admins can view the accounts that they are in.
@@ -41,7 +42,7 @@ class AccountsController < ApplicationController
     end
   end
 
-  # @API
+  # @API Get a single account
   # Retrieve information on an individual account, given by id or sis
   # sis_account_id.
   def show
@@ -50,6 +51,7 @@ class AccountsController < ApplicationController
     respond_to do |format|
       format.html do
         return redirect_to account_settings_url(@account) if @account.site_admin? || !@account.grants_right?(@current_user, nil, :read_course_list)
+        js_env(:ACCOUNT_COURSES_PATH => account_courses_path(@account, :format => :json))
         load_course_right_side
         @courses = @account.fast_all_courses(:term => @term, :limit => @maximum_courses_im_gonna_show, :hide_enrollmentless_courses => @hide_enrollmentless_courses)
         build_course_stats
@@ -60,46 +62,73 @@ class AccountsController < ApplicationController
 
   include Api::V1::Course
 
-  # @API
-  # Retrieve the list of active (non-deleted) courses in this account.
+  # @API List active courses in an account
+  # Retrieve the list of courses in this account.
   #
   # @argument hide_enrollmentless_courses [optional] If set, only return courses that have at least one enrollment.
+  # @argument state[] [optional] If set, only return courses that are in the given state[s]. Valid states are "created," "claimed," "available," "completed," and "deleted." By default, all states but "deleted" are returned.
   #
   # @example_response
   #   [ { 'id': 1, 'name': 'first course', 'course_code': 'first', 'sis_course_id': 'first-sis' },
   #     { 'id': 2, 'name': 'second course', 'course_code': 'second', 'sis_course_id': null } ]
   def courses_api
-    if authorized_action(@account, @current_user, :read)
-      @courses = @account.associated_courses.active
-      @courses = @courses.with_enrollments if params[:hide_enrollmentless_courses]
-      @courses = Api.paginate(@courses, self, api_v1_account_courses_path, :order => :id)
-      render :json => @courses.map { |c| course_json(c, @current_user, session, [], nil) }
-    end
+    return unless authorized_action(@account, @current_user, :read)
+
+    params[:state] ||= %w{created claimed available completed}
+
+    @courses = @account.associated_courses.scoped(:conditions => { :workflow_state => params[:state] })
+    @courses = @courses.with_enrollments if params[:hide_enrollmentless_courses]
+    @courses = Api.paginate(@courses, self, api_v1_account_courses_path, :order => :id)
+
+    render :json => @courses.map { |c| course_json(c, @current_user, session, [], nil) }
   end
 
   def update
     if authorized_action(@account, @current_user, :manage_account_settings)
       respond_to do |format|
+
+        custom_help_links = params[:account].delete :custom_help_links
+        if custom_help_links
+          @account.settings[:custom_help_links] = custom_help_links.sort.map do |index_with_hash|
+            hash = index_with_hash[1]
+            hash.assert_valid_keys ["text", "subtext", "url", "available_to"]
+            hash
+          end
+        elsif @account.settings[:custom_help_links].present?
+          @account.settings.delete :custom_help_links
+        end
+
         enable_user_notes = params[:account].delete :enable_user_notes
         allow_sis_import = params[:account].delete :allow_sis_import
-        global_includes = !!params[:account][:settings].try(:delete, :global_includes)
+        params[:account].delete :default_user_storage_quota_mb unless @account.root_account? && !@account.site_admin? 
         if params[:account][:services]
           params[:account][:services].slice(*Account.services_exposed_to_ui_hash.keys).each do |key, value|
             @account.set_service_availability(key, value == '1')
           end
           params[:account].delete :services
         end
-        if current_user_is_site_admin?
+        if Account.site_admin.grants_right?(@current_user, :manage_site_settings)
           @account.enable_user_notes = enable_user_notes if enable_user_notes
           @account.allow_sis_import = allow_sis_import if allow_sis_import && @account.root_account?
-          if params[:account][:settings]
-            @account.settings[:admins_can_change_passwords] = !!params[:account][:settings][:admins_can_change_passwords]
-            @account.settings[:global_includes] = global_includes
-            @account.settings[:enable_eportfolios] = !!params[:account][:settings][:enable_eportfolios] unless @account.site_admin?
+          if @account.site_admin? && params[:account][:settings]
+            # these shouldn't get set for the site admin account
+            params[:account][:settings].delete(:enable_alerts)
+            params[:account][:settings].delete(:enable_eportfolios)
+          end
+        else
+          # must have :manage_site_settings to update these
+          [ :admins_can_change_passwords,
+            :enable_alerts,
+            :enable_eportfolios,
+            :enable_profiles,
+            :enable_scheduler,
+            :global_includes,
+          ].each do |key|
+            params[:account][:settings].try(:delete, key)
           end
         end
         if sis_id = params[:account].delete(:sis_source_id)
-          if !@account.root_account? && sis_id != @account.sis_source_id && (@account.root_account || @account).grants_right?(@current_user, session, :manage_sis)
+          if !@account.root_account? && sis_id != @account.sis_source_id && @account.root_account.grants_right?(@current_user, session, :manage_sis)
             if sis_id == ''
               @account.sis_source_id = nil
             else
@@ -137,14 +166,14 @@ class AccountsController < ApplicationController
         order_hash[type] = idx
       end
       @account_users = @account_users.select(&:user).sort_by{|au| [order_hash[au.membership_type] || 999, au.user.sortable_name.downcase] }
-      @account_notifications = AccountNotification.for_account(@account)
+      @announcements = @account.announcements
       @alerts = @account.alerts
       @role_types = RoleOverride.account_membership_types(@account)
     end
   end
 
   def confirm_delete_user
-    @root_account = @account.root_account || @account
+    @root_account = @account.root_account
     if authorized_action(@root_account, @current_user, :manage_user_logins)
       @context = @root_account
       @user = @root_account.all_users.find_by_id(params[:user_id]) if params[:user_id].present?
@@ -156,7 +185,7 @@ class AccountsController < ApplicationController
   end
   
   def remove_user
-    @root_account = @account.root_account || @account
+    @root_account = @account.root_account
     if authorized_action(@root_account, @current_user, :manage_user_logins)
       @user = UserAccountAssociation.find_by_account_id_and_user_id(@root_account.id, params[:user_id]).user rescue nil
       # if the user is in any account other then the
@@ -185,8 +214,8 @@ class AccountsController < ApplicationController
   end
   
   def load_course_right_side
-    @root_account = @account.root_account || @account
-    @maximum_courses_im_gonna_show = 100
+    @root_account = @account.root_account
+    @maximum_courses_im_gonna_show = 50
     @term = nil
     if params[:enrollment_term_id].present?
       @term = @root_account.enrollment_terms.active.find(params[:enrollment_term_id]) rescue nil
@@ -210,15 +239,15 @@ class AccountsController < ApplicationController
         end
       end
       if @account.grants_right?(@current_user, nil, :read_roster)
-        @recently_logged_users = @account.all_users.recently_logged_in[0,25]
+        @recently_logged_users = @account.all_users.recently_logged_in
       end
-      @counts_report = ReportSnapshot.get_account_details_by_type_and_id('counts_detailed', @account.id)
+      @counts_report = @account.report_snapshots.detailed.last.try(:data)
     end
   end
   
   def statistics_graph
     if authorized_action(@account, @current_user, :view_statistics)
-      @items = ReportSnapshot.get_account_detail_over_time('counts_progressive_detailed', @account.id, params[:attribute])
+      @items = @account.report_snapshots.progressive.last.try(:report_value_over_time, params[:attribute])
       respond_to do |format|
         format.json { render :json => @items.to_json }
         format.csv { 
@@ -238,22 +267,6 @@ class AccountsController < ApplicationController
           )
         }
       end
-    end
-  end
-  
-  def statistics_page_views
-    if authorized_action(@account, @current_user, :view_statistics)
-      today = Time.zone.today
-
-      start_at = Date.parse(params[:start_at]) rescue nil
-      start_at ||= 1.month.ago.to_date
-      end_at = Date.parse(params[:end_at]) rescue nil
-      end_at ||= today
-
-      @end_at = [[start_at, end_at].max, today].min
-      @start_at = [[start_at, end_at].min, today].min
-      add_crumb(t(:crumb_statistics, "Statistics"), statistics_account_url(@account))
-      add_crumb(t(:crumb_page_views, "Page Views"))
     end
   end
   
@@ -290,49 +303,9 @@ class AccountsController < ApplicationController
       @terms = @account.enrollment_terms.active
       respond_to do |format|
         format.html
-        format.json { render :json => @current_batch.to_json(:include => :sis_batch_log_entries) }
+        format.json { render :json => @current_batch.try(:api_json) }
       end
     end
-  end
-
-  def sis_import_submit
-    raise "SIS imports can only be executed on root accounts" unless @account.root_account?
-    raise "SIS imports can only be executed on enabled accounts" unless @account.allow_sis_import
-
-    if authorized_action(@account, @current_user, :manage_sis)
-      SisBatch.transaction do
-        if !@account.current_sis_batch || !@account.current_sis_batch.importing?
-          batch = SisBatch.create_with_attachment(@account, params[:import_type], params[:attachment])
-
-          if params[:batch_mode].to_i > 0
-            batch.batch_mode = true
-            if params[:batch_mode_term_id].present?
-              batch.batch_mode_term = @account.enrollment_terms.active.find(params[:batch_mode_term_id])
-            end
-          end
-
-          batch.options ||= {}
-          if params[:override_sis_stickiness].to_i > 0
-            batch.options[:override_sis_stickiness] = true
-            [:add_sis_stickiness, :clear_sis_stickiness].each do |option|
-              batch.options[option] = true if params[option].to_i > 0
-            end
-          end
-
-          batch.save!
-
-          @account.current_sis_batch_id = batch.id
-          @account.save
-          batch.process
-          render :json => batch.to_json(:include => :sis_batch_log_entries),
-                 :as_text => true
-        else
-          render :json => {:error=>true, :error_message=> t(:sis_import_in_process_notice, "An SIS import is already in process."), :batch_in_progress=>true}.to_json,
-                 :as_text => true
-        end
-      end
-    end
-
   end
   
   def courses_redirect
@@ -363,10 +336,16 @@ class AccountsController < ApplicationController
   
   def build_course_stats
     teachers = TeacherEnrollment.for_courses_with_user_name(@courses).admin.active
-    students = StudentEnrollment.for_courses_with_user_name(@courses).student
+    course_to_student_counts = StudentEnrollment.student_in_claimed_or_available.scoped(:conditions => { :course_id => @courses.map(&:id) }).count('DISTINCT user_id', :group => :course_id)
+    courses_to_teachers = teachers.inject({}) do |result, teacher|
+      result[teacher.course_id] ||= []
+      result[teacher.course_id] << teacher
+      result
+    end
     @courses.each do |course|
-      course.write_attribute(:student_count, students.select{|e| e.course_id == course.id }.once_per(&:user_id).length)
-      course.write_attribute(:teacher_names, teachers.select{|e| e.course_id == course.id }.once_per(&:user_id).map(&:user_name))
+      course.write_attribute(:student_count, course_to_student_counts[course.id] || 0)
+      course_teachers = courses_to_teachers[course.id] || []
+      course.write_attribute(:teacher_names, course_teachers.uniq(&:user_id).map(&:user_name))
     end
   end
   protected :build_course_stats
@@ -375,19 +354,15 @@ class AccountsController < ApplicationController
     # This needs to be publicly available since external SAML
     # servers need to be able to access it without being authenticated.
     # It is used to disclose our SAML configuration settings.
-    if @domain_root_account.account_authorization_config and @domain_root_account.account_authorization_config.auth_type == 'saml'
-      settings = @domain_root_account.account_authorization_config.saml_settings(request.env['canvas.account_domain'])
-      render :xml => Onelogin::Saml::MetaData.create(settings)
-    else
-      render :xml => ""
-    end
+    settings = AccountAuthorizationConfig.saml_settings_for_account(@domain_root_account, request.host_with_port)
+    render :xml => Onelogin::Saml::MetaData.create(settings)
   end
   
   # TODO Refactor add_account_user and remove_account_user actions into
   # AdminsController. see https://redmine.instructure.com/issues/6634
   def add_account_user
     if authorized_action(@context, @current_user, :manage_account_memberships)
-      list = UserList.new(params[:user_list], @context.root_account || @context, params[:only_search_existing_users] ? false : @context.open_registration_for?(@current_user, session))
+      list = UserList.new(params[:user_list], @context.root_account, @context.user_list_search_mode_for(@current_user))
       users = list.users
       account_users = users.map do |user|
         admin = user.flag_as_admin(@context, params[:membership_type])
@@ -415,7 +390,7 @@ class AccountsController < ApplicationController
       end
     end
   end
-  
+
   def run_report
     if authorized_action(@context, @current_user, :read_reports)
       student_report = AccountReport.new(:user=>@current_user, :account=>@account, :report_type=>params[:report_type], :parameters=>params[:parameters])

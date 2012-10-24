@@ -34,6 +34,22 @@ describe CoursesController do
       assigns[:current_enrollments].should_not be_empty
       assigns[:current_enrollments][0].should eql(@enrollment)
       assigns[:past_enrollments].should_not be_nil
+      assigns[:future_enrollments].should_not be_nil
+    end
+
+    it "should not duplicate enrollments in variables" do
+      course_with_student_logged_in(:active_all => true)
+      course
+      @course.start_at = Time.now + 2.weeks
+      @course.restrict_enrollments_to_course_dates = true
+      @course.save!
+      @course.offer!
+      @course.enroll_student(@user)
+      get 'index'
+      response.should be_success
+      assigns[:future_enrollments].each do |e|
+        assigns[:current_enrollments].should_not include e
+      end
     end
   end
   
@@ -56,6 +72,26 @@ describe CoursesController do
       response.should be_success
       response.should render_template("settings")
     end
+
+    it "should give a helpful error message for students that can't access yet" do
+      course_with_student_logged_in(:active_all => true)
+      @course.workflow_state = 'claimed'
+      @course.save!
+      get 'settings', :course_id => @course.id
+      response.status.should == '401 Unauthorized'
+      assigns[:unauthorized_reason].should == :unpublished
+      assigns[:unauthorized_message].should_not be_nil
+
+      @course.workflow_state = 'available'
+      @course.save!
+      @enrollment.start_at = 2.days.from_now
+      @enrollment.end_at = 4.days.from_now
+      @enrollment.save!
+      get 'settings', :course_id => @course.id
+      response.status.should == '401 Unauthorized'
+      assigns[:unauthorized_reason].should == :unpublished
+      assigns[:unauthorized_message].should_not be_nil
+    end
   end
   
   describe "GET 'enrollment_invitation'" do
@@ -76,7 +112,21 @@ describe CoursesController do
       assigns[:pending_enrollment].should eql(@enrollment)
       assigns[:pending_enrollment].should be_rejected
     end
-    
+
+    it "should successfully reject temporary invitation" do
+      user_with_pseudonym(:active_all => 1)
+      user_session(@user, @pseudonym)
+      user = User.create! { |u| u.workflow_state = 'creation_pending' }
+      user.communication_channels.create!(:path => @cc.path)
+      course(:active_all => 1)
+      @enrollment = @course.enroll_student(user)
+      post 'enrollment_invitation', :course_id => @course.id, :reject => '1', :invitation => @enrollment.uuid
+      response.should be_redirect
+      response.should redirect_to(root_url)
+      assigns[:pending_enrollment].should eql(@enrollment)
+      assigns[:pending_enrollment].should be_rejected
+    end
+
     it "should not reject invitation for bad parameters" do
       course_with_student(:active_course => true, :active_user => true)
       post 'enrollment_invitation', :course_id => @course.id, :reject => '1', :invitation => @enrollment.uuid + 'a'
@@ -120,6 +170,16 @@ describe CoursesController do
       post 'enrollment_invitation', :course_id => @course.id, :accept => '1', :invitation => @e2.uuid
       response.should redirect_to(registration_confirmation_url(:nonce => @pseudonym.communication_channel.confirmation_code, :enrollment => @e2.uuid))
     end
+
+    it "should ask user to login if logged-in user does not match enrollment user, and enrollment user doesn't have an e-mail" do
+      user
+      @user.register!
+      @u2 = @user
+      course_with_student_logged_in(:active_course => true, :active_user => true)
+      @e2 = @course.enroll_user(@u2)
+      post 'enrollment_invitation', :course_id => @course.id, :accept => '1', :invitation => @e2.uuid
+      response.should redirect_to(login_url(:re_login => 1))
+    end
   end
   
   describe "GET 'show'" do
@@ -128,7 +188,13 @@ describe CoursesController do
       get 'show', :id => @course.id
       assert_unauthorized
     end
-    
+
+    it "should not find deleted courses" do
+      course_with_teacher_logged_in(:active_all => true)
+      @course.destroy
+      lambda { get 'show', :id => @course.id }.should raise_exception(ActiveRecord::RecordNotFound)
+    end
+
     it "should assign variables" do
       course_with_student_logged_in(:active_all => true)
       get 'show', :id => @course.id
@@ -143,6 +209,7 @@ describe CoursesController do
       @course.save!
       get 'show', :id => @course.id
       response.status.should == '401 Unauthorized'
+      assigns[:unauthorized_reason].should == :unpublished
       assigns[:unauthorized_message].should_not be_nil
 
       @course.workflow_state = 'available'
@@ -152,7 +219,32 @@ describe CoursesController do
       @enrollment.save!
       get 'show', :id => @course.id
       response.status.should == '401 Unauthorized'
+      assigns[:unauthorized_reason].should == :unpublished
       assigns[:unauthorized_message].should_not be_nil
+    end
+
+    it "should allow student view student to view unpublished courses" do
+      course_with_teacher_logged_in(:active_user => true)
+      @course.should_not be_available
+      @fake_student = @course.student_view_student
+      session[:become_user_id] = @fake_student.id
+
+      get 'show', :id => @course.id
+      response.should be_success
+    end
+
+    it "should not allow student view students to view other courses" do
+      course_with_teacher_logged_in(:active_user => true)
+      @c1 = @course
+
+      course(:active_course => true)
+      @c2 = @course
+
+      @fake1 = @c1.student_view_student
+      session[:become_user_id] = @fake1.id
+
+      get 'show', :id => @c2.id
+      assert_unauthorized
     end
     
     context "show feedback for the current course only on course front page" do
@@ -161,9 +253,9 @@ describe CoursesController do
         @course1 = @course
         course_with_teacher(:course => @course1)
         
-        course_with_student_logged_in(:active_all => true, :user => @student)
+        course_with_student(:active_all => true, :user => @student)
         @course2 = @course
-        course_with_teacher(:course => @course1, :user => @teacher)
+        course_with_teacher(:course => @course2, :user => @teacher)
         
         @a1 = @course1.assignments.new(:title => "some assignment course 1")
         @a1.workflow_state = "published"
@@ -171,6 +263,7 @@ describe CoursesController do
         @s1 = @a1.submit_homework(@student)
         @c1 = @s1.add_comment(:author => @teacher, :comment => "some comment1")
         
+        # this shouldn't show up in any course 1 list
         @a2 = @course2.assignments.new(:title => "some assignment course 2")
         @a2.workflow_state = "published"
         @a2.save
@@ -218,6 +311,12 @@ describe CoursesController do
         assigns(:recent_feedback).first.assignment_id.should == @a1.id
       end
       
+      it "should only show recent feedback if user is student in specified course" do
+        course_with_teacher(:active_all => true, :user => @student)
+        @course3 = @course
+        get 'show', :id => @course3.id
+        assigns(:show_recent_feedback).should be_false
+      end
     end
 
     context "invitations" do
@@ -227,6 +326,37 @@ describe CoursesController do
         get 'show', :id => @course.id, :invitation => @enrollment.uuid
         response.should be_success
         assigns[:pending_enrollment].should == @enrollment
+      end
+
+      it "should still show unauthorized if unpublished, regardless of if previews are allowed" do
+        # unpublished course with invited student in default account (disallows previews)
+        course_with_student
+        @course.workflow_state = 'claimed'
+        @course.save!
+
+        get 'show', :id => @course.id, :invitation => @enrollment.uuid
+        response.status.should == '401 Unauthorized'
+        assigns[:unauthorized_message].should_not be_nil
+
+        # unpublished course with invited student in account that allows previews
+        @account = Account.create!
+        course_with_student(:account => @account)
+        @course.workflow_state = 'claimed'
+        @course.save!
+
+        get 'show', :id => @course.id, :invitation => @enrollment.uuid
+        response.status.should == '401 Unauthorized'
+        assigns[:unauthorized_message].should_not be_nil
+      end
+
+      it "should not show unauthorized for invited teachers when unpublished" do
+        # unpublished course with invited teacher
+        course_with_teacher
+        @course.workflow_state = 'claimed'
+        @course.save!
+
+        get 'show', :id => @course.id, :invitation => @enrollment.uuid
+        response.should be_success
       end
 
       it "should re-invite an enrollment that has previously been rejected" do
@@ -252,15 +382,14 @@ describe CoursesController do
         @enrollment.should be_active
       end
 
-      it "should ignore invitations that have been accepted" do
+      it "should ignore invitations that have been accepted (not logged in)" do
         course_with_student(:active_course => 1, :active_enrollment => 1)
-        @course.grants_right?(@user, nil, :read).should be_true
         get 'show', :id => @course.id, :invitation => @enrollment.uuid
         response.status.should == '401 Unauthorized'
+      end
 
-        # Force reload permissions
-        controller.instance_variable_set(:@context_all_permissions, nil)
-        user_session(@user)
+      it "should ignore invitations that have been accepted (logged in)" do
+        course_with_student_logged_in(:active_course => 1, :active_enrollment => 1)
         get 'show', :id => @course.id, :invitation => @enrollment.uuid
         response.should be_success
         assigns[:pending_enrollment].should be_nil
@@ -325,6 +454,56 @@ describe CoursesController do
         assigns[:pending_enrollment].should == @enrollment2
         session[:enrollment_uuid].should == @enrollment2.uuid
       end
+
+      it "should find temporary enrollments that match the logged in user" do
+        course(:active_course => 1)
+        @temporary = User.create! { |u| u.workflow_state = 'creation_pending' }
+        @temporary.communication_channels.create!(:path => 'user@example.com')
+        @enrollment = @course.enroll_student(@temporary)
+        @user = user_with_pseudonym(:active_all => 1, :username => 'user@example.com')
+        @enrollment.should be_invited
+        user_session(@user)
+
+        get 'show', :id => @course.id
+        response.should be_success
+        assigns[:pending_enrollment].should == @enrollment
+      end
+    end
+
+    it "should redirect html to settings page when user can :read_as_admin, but not :read" do
+      # an account user on the site admin will always have :read_as_admin
+      # permission to any course, but will not have :read permission unless
+      # they've been granted the :read_course_content role override, which
+      # defaults to false for everyone except those with the AccountAdmin role
+      course(:active_all => true)
+      user(:active_all => true)
+      Account.site_admin.add_user(@user, 'LimitedAccess')
+      user_session(@user)
+
+      get 'show', :id => @course.id
+      response.status.should == '302 Found'
+      response.location.should match(%r{/courses/#{@course.id}/settings})
+    end
+
+    it "should not redirect xhr to settings page when user can :read_as_admin, but not :read" do
+      course(:active_all => true)
+      user(:active_all => true)
+      Account.site_admin.add_user(@user, 'LimitedAccess')
+      user_session(@user)
+
+      xhr :get, 'show', :id => @course.id
+      response.status.should == '200 OK'
+    end
+
+    it "should redirect to the xlisted course" do
+      course_with_student_logged_in(:active_all => true)
+      @course1 = @course
+      @course2 = course(:active_all => true)
+      @course1.default_section.crosslist_to_course(@course2, :run_jobs_immediately => true)
+
+      get 'show', :id => @course1.id
+      response.should be_redirect
+      response.location.should match(%r{/courses/#{@course2.id}})
     end
   end
   
@@ -463,7 +642,23 @@ describe CoursesController do
       user
       user_session(@user, @pseudonym)
 
-      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code
+      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code.dup
+      response.should redirect_to(course_url(@course))
+      flash[:notice].should_not be_empty
+      @user.enrollments.length.should == 1
+      @enrollment = @user.enrollments.first
+      @enrollment.course.should == @course
+      @enrollment.workflow_state.should == 'active'
+      @enrollment.should be_self_enrolled
+    end
+
+    it "should enroll the currently logged in user using the long code" do
+      course(:active_all => true)
+      @course.update_attribute(:self_enrollment, true)
+      user
+      user_session(@user, @pseudonym)
+
+      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.long_self_enrollment_code.dup
       response.should redirect_to(course_url(@course))
       flash[:notice].should_not be_empty
       @user.enrollments.length.should == 1
@@ -482,7 +677,7 @@ describe CoursesController do
       @new_pseudonym = Pseudonym.new(:account => @account2, :unique_id => 'jt@instructure.com', :user => @user)
       User.any_instance.stubs(:find_or_initialize_pseudonym_for_account).with(@account2).once.returns(@new_pseudonym)
 
-      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code
+      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code.dup
       response.should redirect_to(course_url(@course))
       flash[:notice].should_not be_empty
       @user.enrollments.length.should == 1
@@ -509,7 +704,7 @@ describe CoursesController do
       user
       user_session(@user)
 
-      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code
+      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.long_self_enrollment_code.dup
       response.should redirect_to(course_url(@course))
       @user.enrollments.length.should == 0
     end
@@ -519,7 +714,7 @@ describe CoursesController do
       course(:active_all => true)
       @course.update_attribute(:self_enrollment, true)
 
-      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code
+      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code.dup
       response.should redirect_to(login_url)
     end
 
@@ -527,7 +722,7 @@ describe CoursesController do
       course(:active_all => true)
       @course.update_attribute(:self_enrollment, true)
 
-      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code
+      get 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code.dup
       response.should be_success
       response.should render_template('open_enrollment')
     end
@@ -536,7 +731,7 @@ describe CoursesController do
       course(:active_all => true)
       @course.update_attribute(:self_enrollment, true)
 
-      post 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code, :email => 'bracken@instructure.com'
+      post 'self_enrollment', :course_id => @course.id, :self_enrollment => @course.self_enrollment_code.dup, :email => 'bracken@instructure.com'
       response.should be_success
       response.should render_template('open_enrollment_confirmed')
       @course.student_enrollments.length.should == 1
@@ -696,6 +891,50 @@ describe CoursesController do
             }
         }
     end
+  end
 
+  describe "GET 'public_feed.atom'" do
+    before(:each) do
+      course_with_student(:active_all => true)
+      assignment_model(:course => @course)
+    end
+
+    it "should require authorization" do
+      get 'public_feed', :format => 'atom', :feed_code => @enrollment.feed_code + 'x'
+      assigns[:problem].should match /The verification code does not match/
+    end
+
+    it "should include absolute path for rel='self' link" do
+      get 'public_feed', :format => 'atom', :feed_code => @enrollment.feed_code
+      feed = Atom::Feed.load_feed(response.body) rescue nil
+      feed.should_not be_nil
+      feed.links.first.rel.should match(/self/)
+      feed.links.first.href.should match(/http:\/\//)
+    end
+
+    it "should include an author for each entry" do
+      get 'public_feed', :format => 'atom', :feed_code => @enrollment.feed_code
+      feed = Atom::Feed.load_feed(response.body) rescue nil
+      feed.should_not be_nil
+      feed.entries.should_not be_empty
+      feed.entries.all?{|e| e.authors.present?}.should be_true
+    end
+  end
+
+  describe "POST 'reset_content'" do
+    it "should allow teachers to reset" do
+      course_with_teacher_logged_in(:active_all => true)
+      post 'reset_content', :course_id => @course.id
+      response.should be_redirect
+      @course.reload.should be_deleted
+    end
+
+    it "should not allow TAs to reset" do
+      course_with_ta(:active_all => true)
+      user_session(@user)
+      post 'reset_content', :course_id => @course.id
+      response.status.to_i.should == 401
+      @course.reload.should be_available
+    end
   end
 end

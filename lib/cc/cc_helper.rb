@@ -52,6 +52,9 @@ module CCHelper
   # imsqti_xmlv1p2/imscc_xmlv1p2/assessment
   # imsqti_xmlv1p2/imscc_xmlv1p2/question-bank
   # imsbasiclti_xmlv1p0
+
+  # QTI-only export
+  QTI_ASSESSMENT_TYPE = 'imsqti_xmlv1p2'
   
   # substitution tokens
   OBJECT_TOKEN = "$CANVAS_OBJECT_REFERENCE$"
@@ -116,6 +119,16 @@ module CCHelper
     id = get_node_val(doc, 'html head meta[name=identifier] @content')
     get_html_title_and_body(doc) << id
   end
+
+  def get_html_title_and_body_and_meta_fields(doc)
+    meta_fields = {}
+    doc.css('html head meta').each do |meta_node|
+      if key = meta_node['name']
+        meta_fields[key] = meta_node['content']
+      end
+    end
+    get_html_title_and_body(doc) << meta_fields
+  end
   
   def get_html_title_and_body(doc)
     title = get_node_val(doc, 'html head title')
@@ -126,6 +139,7 @@ module CCHelper
   require 'set'
   class HtmlContentExporter
     attr_reader :used_media_objects, :media_object_flavor, :media_object_infos
+    attr_accessor :referenced_files
 
     def initialize(course, user, opts = {})
       @media_object_flavor = opts[:media_object_flavor]
@@ -134,24 +148,57 @@ module CCHelper
       @rewriter = UserContent::HtmlRewriter.new(course, user)
       @course = course
       @user = user
+      @track_referenced_files = opts[:track_referenced_files]
+      @for_course_copy = opts[:for_course_copy]
+      @referenced_files = {}
 
       @rewriter.set_handler('file_contents') do |match|
-        match.url.gsub(/course( |%20)files/, WEB_CONTENT_TOKEN)
+        if match.url =~ %r{/media_objects/(\d_\w+)}
+          # This is a media object referencing an attachment that it shouldn't be
+          "/media_objects/#{$1}"
+        else
+          match.url.gsub(/course( |%20)files/, WEB_CONTENT_TOKEN)
+        end
       end
       @rewriter.set_handler('files') do |match|
-        obj = match.obj_class.find_by_id(match.obj_id)
-        next(match.url) unless obj && @rewriter.user_can_view_content?(obj)
-        folder = obj.folder.full_name.gsub(/course( |%20)files/, WEB_CONTENT_TOKEN)
-        # for files, turn it into a relative link by path, rather than by file id
-        # we retain the file query string parameters
-        "#{folder}/#{URI.escape(obj.display_name)}#{CCHelper.file_query_string(match.rest)}"
+        # If match.obj_id is nil, it's because we're actually linking to a page
+        # (the /courses/:id/files page) and not to a specific file. In this case,
+        # just pass it straight through.
+        if match.obj_id.nil?
+          "#{COURSE_TOKEN}/files"
+        else
+          obj = match.obj_class.find_by_id(match.obj_id)
+          next(match.url) unless obj && @rewriter.user_can_view_content?(obj)
+          folder = obj.folder.full_name.gsub(/course( |%20)files/, WEB_CONTENT_TOKEN)
+          @referenced_files[obj.id] = CCHelper.create_key(obj) if @track_referenced_files && !@referenced_files[obj.id]
+          # for files, turn it into a relative link by path, rather than by file id
+          # we retain the file query string parameters
+          "#{folder}/#{URI.escape(obj.display_name)}#{CCHelper.file_query_string(match.rest)}"
+        end
       end
       @rewriter.set_handler('wiki') do |match|
-        "#{WIKI_TOKEN}/#{match.type}#{match.rest}"
+        # WikiPagesController allows loosely-matching URLs; fix them before exporting
+        if match.rest.present?
+          url_or_title = match.rest[1..-1]
+          page = @course.wiki.wiki_pages.deleted_last.find_by_url(url_or_title) ||
+                 @course.wiki.wiki_pages.deleted_last.find_by_url(url_or_title.to_url)
+        elsif match.obj_id.present?
+          page = @course.wiki.wiki_pages.find_by_id(match.obj_id)
+        end
+        if page
+          "#{WIKI_TOKEN}/#{match.type}/#{page.url}"
+        else
+          "#{WIKI_TOKEN}/#{match.type}#{match.rest}"
+        end
+      end
+      @rewriter.set_handler('items') do |match|
+        item = ContentTag.find(match.obj_id)
+        migration_id = CCHelper.create_key(item)
+        new_url = "#{COURSE_TOKEN}/modules/#{match.type}/#{migration_id}"
       end
       @rewriter.set_default_handler do |match|
         new_url = match.url
-        if match.obj_id
+        if match.obj_id && match.obj_class
           obj = match.obj_class.find_by_id(match.obj_id)
           if obj && @rewriter.user_can_view_content?(obj)
             # for all other types,
@@ -159,6 +206,8 @@ module CCHelper
             migration_id = CCHelper.create_key(obj)
             new_url = "#{OBJECT_TOKEN}/#{match.type}/#{migration_id}"
           end
+        elsif match.obj_id
+          new_url = "#{COURSE_TOKEN}/#{match.type}/#{match.obj_id}#{match.rest}"
         else
           new_url = "#{COURSE_TOKEN}/#{match.type}#{match.rest}"
         end
@@ -168,22 +217,27 @@ module CCHelper
 
     attr_reader :course, :user
 
-    def html_page(html, title, id = nil)
+    def html_page(html, title, meta_fields={})
       content = html_content(html)
-      meta_html = id.nil? ? "" : %{<meta name="identifier" content="#{id}"/>\n}
+      meta_html = ""
+      meta_fields.each_pair do |k, v|
+        next unless v.present?
+        meta_html += %{<meta name="#{k}" content="#{v}"/>\n}
+      end
 
-      %{<html>\n<head>\n<title>#{title}</title>\n#{meta_html}</head>\n<body>\n#{content}\n</body>\n</html>}
+      %{<html>\n<head>\n<meta http-equiv="Content-Type" content="text/html; charset=utf-8">\n<title>#{title}</title>\n#{meta_html}</head>\n<body>\n#{content}\n</body>\n</html>}
     end
 
     def html_content(html)
       html = @rewriter.translate_content(html)
-      return html if html.blank?
+      return html if html.blank? || @for_course_copy
 
       # keep track of found media comments, and translate them into links into the files tree
       # if imported back into canvas, they'll get uploaded to the media server
       # and translated back into media comments
       doc = Nokogiri::HTML::DocumentFragment.parse(html)
       doc.css('a.instructure_inline_media_comment').each do |anchor|
+        next unless anchor['id']
         media_id = anchor['id'].gsub(/^media_comment_/, '')
         obj = course.media_objects.by_media_id(media_id).first
         if obj && obj.context == course && migration_id = CCHelper.create_key(obj)
@@ -222,15 +276,18 @@ module CCHelper
   def self.file_query_string(sub_path)
     return if sub_path.blank?
     qs = []
-    uri = URI.parse(sub_path)
-    unless uri.path == "/preview" # defaults to preview, so no qs added
-      qs << "canvas_#{Rack::Utils.escape(uri.path[1..-1])}=1"
-    end
+    begin
+      uri = URI.parse(sub_path)
+      unless uri.path == "/preview" # defaults to preview, so no qs added
+        qs << "canvas_#{Rack::Utils.escape(uri.path[1..-1])}=1"
+      end
 
-    Rack::Utils.parse_query(uri.query).each do |k,v|
-      qs << "canvas_qs_#{Rack::Utils.escape(k)}=#{Rack::Utils.escape(v)}"
+      Rack::Utils.parse_query(uri.query).each do |k,v|
+        qs << "canvas_qs_#{Rack::Utils.escape(k)}=#{Rack::Utils.escape(v)}"
+      end
+    rescue URI::Error => e
+      # if we can't parse the url, we can't preserve canvas query params
     end
-
     return nil if qs.blank?
     "?#{qs.join("&")}"
   end

@@ -30,7 +30,7 @@ class Message < ActiveRecord::Base
   belongs_to :user
   belongs_to :asset_context, :polymorphic => true
 
-  attr_accessible :to, :from, :subject, :body, :delay_for, :context, :path_type, :from_name, :sent_at, :notification, :user, :communication_channel, :notification_name, :asset_context
+  attr_accessible :to, :from, :subject, :body, :delay_for, :context, :path_type, :from_name, :sent_at, :notification, :user, :communication_channel, :notification_name, :asset_context, :data
 
   after_save :stage_message
   before_save :move_messages_for_deleted_users
@@ -41,6 +41,7 @@ class Message < ActiveRecord::Base
   validates_length_of :transmission_errors, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
 
   def polymorphic_url_with_context_host(record_or_hash_or_array, options = {})
+    options[:protocol] = HostUrl.protocol
     if record_or_hash_or_array.is_a? Array
       options[:host] = HostUrl.context_host(record_or_hash_or_array.first)
     else
@@ -89,6 +90,10 @@ class Message < ActiveRecord::Base
   
   def notification_category
     @cat ||= self.notification.category
+  end
+
+  def notification_display_category
+    notification.display_category
   end
   
   named_scope :for, lambda { |context| 
@@ -255,7 +260,7 @@ class Message < ActiveRecord::Base
     @context = self.context
     @asset = @context
     @asset_context = self.asset_context
-    context, asset, user, delayed_messages, asset_context = [@context, @asset, @user, @delayed_messages, @asset_context]
+    context, asset, user, delayed_messages, asset_context, data = [@context, @asset, @user, @delayed_messages, @asset_context, @data]
     @time_zone = Time.zone
     time_zone = Time.zone
     path_type ||= self.communication_channel.path_type rescue path_type
@@ -305,7 +310,7 @@ class Message < ActiveRecord::Base
   end
 
   def reply_to_secure_id
-    Canvas::Security.hmac_sha1(self.id.to_s)
+    Canvas::Security.hmac_sha1(self.global_id.to_s)
   end
 
   def reply_to_address
@@ -314,13 +319,15 @@ class Message < ActiveRecord::Base
     res = self.from if self.context_type == 'ErrorReport'
     unless res
       addr, domain = HostUrl.outgoing_email_address.split(/@/)
-      res = "#{addr}+#{self.reply_to_secure_id}-#{self.id}@#{domain}"
+      res = "#{addr}+#{self.reply_to_secure_id}-#{self.global_id}@#{domain}"
     end
   end
-  
+
   def deliver
-    self.dispatch
-    
+    unless self.dispatch
+      return # don't dispatch cancelled or already-sent messages
+    end
+
     if not self.path_type
       logger.warn("Could not find a path type for #{self.inspect}")
       return
@@ -331,10 +338,10 @@ class Message < ActiveRecord::Base
       logger.warn("Could not set delivery_method from #{self.path_type}")
       return
     end
-    
+
     self.send(delivery_method)
   end
-  
+
   def self.dashboard_messages(messages)
     message_types = {}
     messages.each do |m|
@@ -378,6 +385,10 @@ class Message < ActiveRecord::Base
     super(key, default, options)
   end
   alias :t :translate
+
+  def data=(values_hash)
+    @data = OpenStruct.new(values_hash)
+  end
 
   protected
   

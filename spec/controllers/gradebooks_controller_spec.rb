@@ -28,7 +28,6 @@ describe GradebooksController do
     before(:each) do
       Course.expects(:find).returns(['a course'])
     end
-
   end
 
   describe "GET 'grade_summary'" do
@@ -36,7 +35,7 @@ describe GradebooksController do
       course_with_teacher_logged_in(:active_all => true)
       get 'grade_summary', :course_id => @course.id
       response.should be_redirect
-      response.should redirect_to(:action => 'show')
+      response.should redirect_to(:controller => 'gradebook2', :action => 'show')
     end
 
     it "should render for current user" do
@@ -45,6 +44,7 @@ describe GradebooksController do
       response.should render_template('grade_summary')
       get 'grade_summary', :course_id => @course.id, :id => @user.id
       response.should render_template('grade_summary')
+      assigns[:courses_with_grades].should_not be_nil
     end
 
     it "should not allow access for wrong user" do
@@ -69,6 +69,38 @@ describe GradebooksController do
       @user.reload
       get 'grade_summary', :course_id => @course.id, :id => @student.id
       response.should render_template('grade_summary')
+      assigns[:courses_with_grades].should be_nil
+    end
+
+    it "should not allow access for a linked student" do
+      course_with_student(:active_all => true)
+      @student = @user
+      user(:active_all => true)
+      user_session(@user)
+      @se = @course.enroll_student(@user)
+      @se.accept
+      @se.update_attribute(:associated_user_id, @student.id)
+      @user.reload
+      get 'grade_summary', :course_id => @course.id, :id => @student.id
+      assert_unauthorized
+    end
+
+    it "should not allow access for an observer linked in a different course" do
+      course_with_student(:active_all => true)
+      @course1 = @course
+      @student = @user
+      course(:active_all => true)
+      @course2 = @course
+
+      user(:active_all => true)
+      user_session(@user)
+      @oe = @course1.enroll_user(@user, 'ObserverEnrollment')
+      @oe.accept
+      @oe.update_attribute(:associated_user_id, @student.id)
+
+      @user.reload
+      get 'grade_summary', :course_id => @course2.id, :id => @student.id
+      assert_unauthorized
     end
 
     it "should allow concluded teachers to see a student grades pages" do
@@ -80,6 +112,7 @@ describe GradebooksController do
       get 'grade_summary', :course_id => @course.id, :id => @student.id
       response.should be_success
       response.should render_template('grade_summary')
+      assigns[:courses_with_grades].should be_nil
     end
 
     it "should allow concluded students to see their grades pages" do
@@ -87,6 +120,58 @@ describe GradebooksController do
       @enrollment.conclude
       get 'grade_summary', :course_id => @course.id, :id => @user.id
       response.should render_template('grade_summary')
+    end
+    
+    it "give a student the option to switch between courses" do
+      teacher = user_with_pseudonym(:username => 'teacher@example.com', :active_all => 1)
+      student = user_with_pseudonym(:username => 'student@example.com', :active_all => 1)
+      course1 = course_with_teacher(:user => teacher, :active_all => 1).course
+      student_in_course :user => student, :active_all => 1
+      course2 = course_with_teacher(:user => teacher, :active_all => 1).course
+      student_in_course :user => student, :active_all => 1
+      user_session(student)
+      get 'grade_summary', :course_id => @course.id, :id => student.id
+      response.should be_success
+      assigns[:courses_with_grades].should_not be_nil
+      assigns[:courses_with_grades].length.should == 2
+    end
+    
+    it "should not give a teacher the option to switch between courses when viewing a student's grades" do
+      teacher = user_with_pseudonym(:username => 'teacher@example.com', :active_all => 1)
+      student = user_with_pseudonym(:username => 'student@example.com', :active_all => 1)
+      course1 = course_with_teacher(:user => teacher, :active_all => 1).course
+      student_in_course :user => student, :active_all => 1
+      course2 = course_with_teacher(:user => teacher, :active_all => 1).course
+      student_in_course :user => student, :active_all => 1
+      user_session(teacher)
+      get 'grade_summary', :course_id => @course.id, :id => student.id
+      response.should be_success
+      assigns[:courses_with_grades].should be_nil
+    end
+    
+    it "should not give a linked observer the option to switch between courses when viewing a student's grades" do
+      teacher = user_with_pseudonym(:username => 'teacher@example.com', :active_all => 1)
+      student = user_with_pseudonym(:username => 'student@example.com', :active_all => 1)
+      observer = user_with_pseudonym(:username => 'parent@example.com', :active_all => 1)
+
+      course1 = course_with_teacher(:user => teacher, :active_all => 1).course
+      student_in_course :user => student, :active_all => 1
+      oe = course1.enroll_user(observer, 'ObserverEnrollment')
+      oe.associated_user = student
+      oe.save!
+      oe.accept
+
+      course2 = course_with_teacher(:user => teacher, :active_all => 1).course
+      student_in_course :user => student, :active_all => 1
+      oe = course2.enroll_user(observer, 'ObserverEnrollment')
+      oe.associated_user = student
+      oe.save!
+      oe.accept
+
+      user_session(observer)
+      get 'grade_summary', :course_id => course1.id, :id => student.id
+      response.should be_success
+      assigns[:courses_with_grades].should be_nil
     end
   end
 
@@ -127,21 +212,20 @@ describe GradebooksController do
       get 'grade_summary', :course_id => @course.id
 
       response.should be_redirect
+      response.should redirect_to(:controller => 'gradebook2', :action => 'show')
+
+      # reset back to showing the old gradebook
+      get 'change_gradebook_version', :course_id => @course.id, :version => 1
       response.should redirect_to(:action => 'show')
 
       # tell it to use gradebook 2
-      get 'change_gradebook_version', :course_id => @course.id
-      response.should redirect_to(:action => 'show', :controller => :gradebook2)
-
-      # reset back to showing the old gradebook
-      get 'change_gradebook_version', :course_id => @course.id, :reset => true
-      response.should redirect_to(:action => 'show')
+      get 'change_gradebook_version', :course_id => @course.id, :version => 2
+      response.should redirect_to(:controller => 'gradebook2', :action => 'show')
     end
 
   end
 
   describe "POST 'update_submission'" do
-
     it "should have a route for update_submission" do
       params_from(:post, "/courses/20/gradebook/update_submission").should ==
         {:controller => "gradebooks", :action => "update_submission", :course_id => "20"}
@@ -197,7 +281,8 @@ describe GradebooksController do
       response.should be_redirect
 
       # attempt to grade another section should throw not found
-      proc { post 'update_submission', :course_id => @course.id, :submission => {:comment => "some comment", :assignment_id => @assignment.id, :user_id => s2.user_id} }.should raise_error(ActiveRecord::RecordNotFound)
+      post 'update_submission', :course_id => @course.id, :submission => {:comment => "some comment", :assignment_id => @assignment.id, :user_id => s2.user_id}
+      flash[:error].should eql 'Submission was unsuccessful: Submission Failed'
     end
   end
 
@@ -206,7 +291,34 @@ describe GradebooksController do
       params_from(:get, "/courses/20/gradebook/speed_grader").should ==
         {:controller => "gradebooks", :action => "speed_grader", :course_id => "20"}
     end
-
   end
 
+  describe "GET 'public_feed.atom'" do
+    before(:each) do
+      course_with_student(:active_all => true)
+      assignment_model(:course => @course)
+      @submission = @assignment.submit_homework(@student, { :url => "http://www.instructure.com/" })
+    end
+
+    it "should require authorization" do
+      get 'public_feed', :format => 'atom', :feed_code => @course.feed_code + 'x'
+      assigns[:problem].should match /The verification code is invalid/
+    end
+
+    it "should include absolute path for rel='self' link" do
+      get 'public_feed', :format => 'atom', :feed_code => @course.feed_code
+      feed = Atom::Feed.load_feed(response.body) rescue nil
+      feed.should_not be_nil
+      feed.links.first.rel.should match(/self/)
+      feed.links.first.href.should match(/http:\/\//)
+    end
+
+    it "should include an author for each entry" do
+      get 'public_feed', :format => 'atom', :feed_code => @course.feed_code
+      feed = Atom::Feed.load_feed(response.body) rescue nil
+      feed.should_not be_nil
+      feed.entries.should_not be_empty
+      feed.entries.all?{|e| e.authors.present?}.should be_true
+    end
+  end
 end

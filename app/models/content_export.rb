@@ -21,15 +21,22 @@ class ContentExport < ActiveRecord::Base
   belongs_to :course
   belongs_to :user
   belongs_to :attachment
+  belongs_to :content_migration
   has_many :attachments, :as => :context, :dependent => :destroy
   has_a_broadcast_policy
   serialize :settings
   attr_accessible
+
+  #export types
+  COMMON_CARTRIDGE = 'common_cartridge'
+  COURSE_COPY = 'course_copy'
+  QTI = 'qti'
   
   workflow do
     state :created
     state :exporting
     state :exported
+    state :exported_for_course_copy
     state :failed
     state :deleted
   end
@@ -38,22 +45,28 @@ class ContentExport < ActiveRecord::Base
     p.dispatch :content_export_finished
     p.to { [user] }
     p.whenever {|record|
-      record.changed_state(:exported)
+      record.changed_state(:exported) && self.content_migration.blank?
     }
     
     p.dispatch :content_export_failed
     p.to { [user] }
     p.whenever {|record|
-      record.changed_state(:failed)
+      record.changed_state(:failed) && self.content_migration.blank?
     }
   end
   
-  def export_course
+  def export_course(opts={})
     self.workflow_state = 'exporting'
     self.save
     begin
-      if CC::CCExporter.export(self)
-        self.workflow_state = 'exported'
+      @cc_exporter = CC::CCExporter.new(self, opts.merge({:for_course_copy => for_course_copy?}))
+      if @cc_exporter.export
+        self.progress = 100
+        if for_course_copy?
+          self.workflow_state = 'exported_for_course_copy'
+        else
+          self.workflow_state = 'exported'
+        end
       else
         self.workflow_state = 'failed'
       end
@@ -65,6 +78,18 @@ class ContentExport < ActiveRecord::Base
     end
   end
   handle_asynchronously :export_course, :priority => Delayed::LOW_PRIORITY, :max_attempts => 1
+
+  def referenced_files
+    @cc_exporter ? @cc_exporter.referenced_files : {}
+  end
+
+  def for_course_copy?
+    self.export_type == COURSE_COPY
+  end
+
+  def qti_export?
+    self.export_type == QTI
+  end
   
   def error_message
     self.settings[:errors] ? self.settings[:errors].last : nil
@@ -73,8 +98,40 @@ class ContentExport < ActiveRecord::Base
   def error_messages
     self.settings[:errors] ||= []
   end
+
+  def selected_content=(copy_settings)
+    self.settings[:selected_content] = copy_settings
+  end
+
+  def selected_content
+    self.settings[:selected_content] ||= {}
+  end
+
+  def export_object?(obj)
+    return false unless obj
+    return true if selected_content.empty?
+    return true if is_set?(selected_content[:everything])
+
+    asset_type = obj.class.table_name
+    return true if is_set?(selected_content["all_#{asset_type}"])
+
+    return false unless selected_content[asset_type]
+    return true if is_set?(selected_content[asset_type][CC::CCHelper.create_key(obj)])
+
+    false
+  end
+
+  def add_item_to_export(obj)
+    return unless obj && obj.class.respond_to?(:table_name)
+    return if selected_content.empty?
+    return if is_set?(selected_content[:everything])
+
+    asset_type = obj.class.table_name
+    selected_content[asset_type] ||= {}
+    selected_content[asset_type][CC::CCHelper.create_key(obj)] = true
+  end
   
-  def add_error(user_message, exception_or_info)
+  def add_error(user_message, exception_or_info=nil)
     self.settings[:errors] ||= []
     if exception_or_info.is_a?(Exception)
       er = ErrorReport.log_exception(:course_export, exception_or_info)
@@ -100,7 +157,7 @@ class ContentExport < ActiveRecord::Base
   end
 
   def settings
-    read_attribute(:settings) || write_attribute(:settings,{})
+    read_attribute(:settings) || write_attribute(:settings,{}.with_indifferent_access)
   end
   
   def fast_update_progress(val)
@@ -109,6 +166,16 @@ class ContentExport < ActiveRecord::Base
   end
   
   named_scope :active, {:conditions => ['workflow_state != ?', 'deleted']}
+  named_scope :not_for_copy, {:conditions => ['workflow_state != ?', 'exported_for_course_copy']}
+  named_scope :common_cartridge, {:conditions => ['export_type == ?', COMMON_CARTRIDGE]}
+  named_scope :qti, {:conditions => ['export_type == ?', QTI]}
+  named_scope :course_copy, {:conditions => ['export_type == ?', COURSE_COPY]}
   named_scope :running, {:conditions => ['workflow_state IN (?)', ['created', 'exporting']]}
+
+  private
+
+  def is_set?(option)
+    Canvas::Plugin::value_to_boolean option
+  end
   
 end

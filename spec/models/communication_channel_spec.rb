@@ -37,14 +37,27 @@ describe CommunicationChannel do
       c = communication_channel_model(:user_id => @user.id, :workflow_state => 'active', :path => "path3@example.com")
       d = communication_channel_model(:user_id => @user.id, :path => "path4@example.com")
       notification_model
-      notification_policy_model(:communication_channel_id => a.id, :notification_id => @notification.id, :user_id => @user.id )
-      notification_policy_model(:communication_channel_id => b.id, :notification_id => @notification.id, :user_id => @user.id )
-      notification_policy_model(:communication_channel_id => c.id, :notification_id => @notification.id, :user_id => @user.id )
+      notification_policy_model(:communication_channel => a, :notification => @notification )
+      notification_policy_model(:communication_channel => b, :notification => @notification )
+      notification_policy_model(:communication_channel => c, :notification => @notification )
       @user.reload
       channels = CommunicationChannel.find_all_for(@user, @notification)
       channels.should include(a)
       channels.should include(b)
       channels.should include(c)
+      channels.should_not include(d)
+    end
+
+    it "should exclude inactive channels, even if a notification policy exists" do
+      user_model(:workflow_state => 'registered')
+      a = communication_channel_model(:user_id => @user.id, :workflow_state => 'active')
+      d = communication_channel_model(:user_id => @user.id, :path => "path4@example.com")
+      notification_model
+      notification_policy_model(:communication_channel_id => a.id, :notification_id => @notification.id )
+      notification_policy_model(:communication_channel_id => d.id, :notification_id => @notification.id )
+      @user.reload
+      channels = CommunicationChannel.find_all_for(@user, @notification)
+      channels.should include(a)
       channels.should_not include(d)
     end
     
@@ -57,13 +70,17 @@ describe CommunicationChannel do
       a.should 
 
       @n = Notification.create(:name => "New Notification")
-      @u.notification_policies.create(:communication_channel => a, :notification => @n)
+      a.notification_policies.create!(:notification => @n)
       channels = CommunicationChannel.find_all_for(@u, @n)
       channels.should eql([@u.communication_channel])
     end
     
-    it "should find a default channel if no policies are specified" do
+    it "should find a default email (and active) channel if no policies are specified" do
       @u = user_model(:workflow_state => 'registered')
+      x = @u.communication_channels.create(:path => "notme@example.com")
+      x.retire!
+      sms = @u.communication_channels.create(:path => "123456@example.com", :path_type => "sms")
+      sms.confirm!
       a = @u.communication_channels.create(:path => "a@example.com")
       a.confirm!
       b = @u.communication_channels.create(:path => "b@example.com")
@@ -71,6 +88,7 @@ describe CommunicationChannel do
       @n = Notification.create(:name => "New Notification", :category => 'TestImmediately')
       @u.reload
       channels = CommunicationChannel.find_all_for(@u, @n)
+      channels.should_not include(x)
       channels.should include(a)
       channels.should_not include(b)
       channels.should_not include(c)
@@ -88,7 +106,7 @@ describe CommunicationChannel do
       channels.should include(a)
       channels.should_not include(b)
       
-      @user.notification_policies.create!(:communication_channel => b, :notification => @n, :frequency => 'immediately')
+      b.notification_policies.create!(:notification => @n, :frequency => 'immediately')
       channels = CommunicationChannel.find_all_for(@user, @n)
       channels.should include(b)
       channels.should_not include(a)
@@ -99,7 +117,7 @@ describe CommunicationChannel do
       a = @user.communication_channels.create(:path => "a@example.com")
       a.confirm!
       @n = Notification.create!(:name => "New notification")
-      @user.notification_policies.create!(:communication_channel => a, :notification => @n, :frequency => 'daily')
+      a.notification_policies.create!(:notification => @n, :frequency => 'daily')
       channels = CommunicationChannel.find_all_for(@user, @n)
       channels.should be_empty
     end
@@ -248,17 +266,6 @@ describe CommunicationChannel do
     @cc3.position.should eql(1)
   end
   
-  it "should have a proper type formatted for the screen" do
-    communication_channel_model
-    @cc.proper_type.should eql("Email Address")
-    @cc.path_type = 'sms'
-    @cc.proper_type.should eql("Cell Number")
-    @cc.path_type = 'chat'
-    @cc.proper_type.should eql("Chat")
-    @cc.path_type= 'not valid'
-    @cc.proper_type.should eql("Email Address")
-  end
-  
   context "can_notify?" do
     it "should normally be able to be used" do
       communication_channel_model
@@ -267,7 +274,7 @@ describe CommunicationChannel do
     
     it "should not be able to be used if it has a policy to not use it" do
       communication_channel_model
-      notification_policy_model(:frequency => "never", :communication_channel_id => @communication_channel.id)
+      notification_policy_model(:frequency => "never", :communication_channel => @communication_channel)
       @communication_channel.reload
       @communication_channel.should_not be_can_notify
     end
@@ -292,5 +299,31 @@ describe CommunicationChannel do
     @user.communication_channels.create!(:path => 'user1@example.com') { |cc| cc.workflow_state = 'retired' }
     # the unconfirmed should still be valid, even though a retired exists
     @cc.should be_valid
+  end
+
+  context "notifications" do
+    it "should forward the root account to the message" do
+      notification = Notification.create!(:name => 'Confirm Email Communication Channel', :category => 'Registration')
+      @user = User.create!
+      @user.register!
+      @cc = @user.communication_channels.create!(:path => 'user1@example.com')
+      account = Account.create!
+      HostUrl.stubs(:context_host).with(account).returns('someserver.com')
+      HostUrl.stubs(:context_host).with(nil).returns('default')
+      @cc.send_confirmation!(account)
+      message = Message.find(:first, :conditions => { :communication_channel_id => @cc.id, :notification_id => notification.id })
+      message.should_not be_nil
+      message.body.should match /someserver.com/
+    end
+  end
+
+  it "should not allow deleting sms channels that are the otp channel" do
+    user_with_pseudonym(:active_all => 1)
+    @cc = @user.communication_channels.sms.create!(:path => 'bob')
+    @cc.confirm!
+    @user.otp_communication_channel = @cc
+    @user.save!
+    @cc.destroy.should be_false
+    @cc.reload.should be_active
   end
 end

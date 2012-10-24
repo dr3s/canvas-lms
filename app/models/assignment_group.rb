@@ -56,11 +56,7 @@ class AssignmentGroup < ActiveRecord::Base
   
   def update_student_grades
     if @grades_changed
-      begin
-        self.context.recompute_student_scores
-      rescue
-        ErrorReport.log_exception(:grades, $!)
-      end
+      connection.after_transaction_commit { self.context.recompute_student_scores }
     end
   end
   
@@ -69,9 +65,9 @@ class AssignmentGroup < ActiveRecord::Base
   end
 
   set_policy do
-    given { |user, session| self.context.grants_rights?(user, session, :read)[:read] } #self.context.students.include? user }
+    given { |user, session| self.context.grants_rights?(user, session, :read, :view_all_grades, :manage_grades).any?(&:last) }
     can :read
-    
+
     given { |user, session| self.context.grants_right?(user, session, :manage_assignments) }
     can :update and can :delete and can :create and can :read
 
@@ -183,9 +179,8 @@ class AssignmentGroup < ActiveRecord::Base
 
   def self.process_migration(data, migration)
     groups = data['assignment_groups'] ? data['assignment_groups']: []
-    to_import = migration.to_import 'assignment_groups'
     groups.each do |group|
-      if group['migration_id'] && (!to_import || to_import[group['migration_id']])
+      if migration.import_object?("assignment_groups", group['migration_id'])
         begin
           import_from_migration(group, migration.context)
         rescue
@@ -203,6 +198,7 @@ class AssignmentGroup < ActiveRecord::Base
     item ||= context.assignment_groups.new
     context.imported_migration_items << item if context.imported_migration_items && item.new_record?
     item.migration_id = hash[:migration_id]
+    item.workflow_state = 'available' if item.deleted?
     item.name = hash[:title]
     item.position = hash[:position].to_i if hash[:position] && hash[:position].to_i > 0
     item.group_weight = hash[:group_weight] if hash[:group_weight]
@@ -233,6 +229,17 @@ class AssignmentGroup < ActiveRecord::Base
       group.rules = rule
     end
     group.save
+  end
+
+  def has_frozen_assignments?(user)
+    return false unless PluginSetting.settings_for_plugin(:assignment_freezer)
+    return false unless self.active_assignments.length > 0
+
+    self.active_assignments.each do |asmnt|
+      return true if asmnt.frozen_for_user?(user)
+    end
+
+    false
   end
 
 end

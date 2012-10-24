@@ -52,7 +52,9 @@ course will see this page first.  You can change that from [the course home page
     <div id="last_edited_by" class="clearfix">
       <% last_version = @page.versions.current.model rescue @page %>
       <a href="<%= context_url(@context, :context_wiki_page_wiki_page_revisions_path, @page) %>" id="page_history" class="history"><%= t 'links.page_history', 'Page history' %></a>
-      <%= t 'labels.last_edited', 'Last edited by %{name} %{time_ago} ago', :name => @page.user_name, :time_ago => (time_ago_in_words(last_version.updated_at) rescue "???") %>
+      <% if @page.user %>
+        <%= t 'labels.last_edited', 'Last edited by %{name} %{time_ago} ago', :name => @page.user_name, :time_ago => (time_ago_in_words(last_version.updated_at) rescue "???") %>
+      <% end %>
       <% if (@context.context.is_a?(Course) rescue false) %>
         <div><%= image_tag "warning.png", :style => "height: 10px;" %>
           <%= mt :group_wiki_warning, "This page is part of the group wiki, *not* your course wiki. If you're looking for the course wiki, [click here](%{link}).", 
@@ -87,8 +89,8 @@ course will see this page first.  You can change that from [the course home page
     <% if course_home %>
       <input type="hidden" name="return_to" value="<%= request.url %>"/>
     <% end %>
-    <% if can_do(@page, @current_user, :update) %>
-      <div id="below_editor">
+    <div id="below_editor">
+      <% if can_do(@page, @current_user, :update) %>
         <div style="text-align: left; <%= hidden if @page.url == 'front-page' %>">
           <%= f.check_box :hide_from_students %>
           <%= f.label :hide_from_students, :en => "Hide this Page from Students" %>
@@ -108,38 +110,44 @@ course will see this page first.  You can change that from [the course home page
           %>
           <%= t 'editing_roles.prompt', '%{options} can edit this page', :options => select_html %>
         </div>
-      </div>
-    <% end %>
-    <div class="someone_else_edited" style="display: none; text-align: left;">
-      <%= mt 'notices.page_edited_while_viewing', 'This page has been updated by someone else since you started viewing it. [Click here to reload the page.](%{link})', :link => request.url %>
+      <% end %>
+      <div class="someone_else_edited" style="display: none; text-align: left;">
+        <%= mt 'notices.page_edited_while_viewing', 'This page has been updated by someone else since you started viewing it. [Click here to reload the page.](%{link})', :link => request.url %>
       
-      <%= image_tag "warning.png" %>
-      <%= t 'notices.page_edited_while_viewing_detailed', <<-EOT
-      Someone else has edited this page since you first loaded it, and if you submit now you will overwrite their changes.
-      You may want to reload the page and re-enter your changes to make sure you don't lose some else's work.
-      EOT
-      %>
-    </div>
-    <div style="text-align: left; <%= hidden if @page.new_record? %>">
-      <%= f.check_box :notify_of_update %>
-      <%= f.label :notify_of_update, :en => "Notify users that this content has changed" %>
-    </div>
-    <div style="text-align: left; padding: 0.4em 0;">
-      <button type="submit" name="commit" id="wiki_page_submit" class="button"><%= t 'buttons.save_changes', 'Save Changes' %></button>
-      <button type="button" id="cancel_editing" class="cancel_button button-secondary"><%= t '#buttons.cancel', 'Cancel' %></button>
+        <%= image_tag "warning.png" %>
+        <%= t 'notices.page_edited_while_viewing_detailed', <<-EOT
+        Someone else has edited this page since you first loaded it, and if you submit now you will overwrite their changes.
+        You may want to reload the page and re-enter your changes to make sure you don't lose some else's work.
+        EOT
+        %>
+      </div>
+      <div style="text-align: left; <%= hidden if @page.new_record? %>">
+        <%= f.check_box :notify_of_update %>
+        <%= f.label :notify_of_update, :en => "Notify users that this content has changed" %>
+      </div>
+      <div style="text-align: left; padding: 0.4em 0;">
+        <button type="submit" name="commit" id="wiki_page_submit" class="button"><%= t 'buttons.save_changes', 'Save Changes' %></button>
+        <button type="button" id="cancel_editing" class="cancel_button button-secondary"><%= t '#buttons.cancel', 'Cancel' %></button>
+      </div>
     </div>
   <% end -%>
 <% js_block do  %>
   <script type="text/javascript">
+  require([
+    'jquery' /* $ */,
+    'wiki',
+    'vendor/jquery.pageless' /* pageless */
+  ], function($, wikiPage) {
     wikiPage.init(); //this is purposly not in a domready, for some reason it wont work there.
-  </script>
-  <% if @editing %>
-    <script>
+
+    <% if @editing %>
       $(document).ready(function() {
         $("#wiki_show_view_secondary .edit:first").click();
       });
-    </script>
-  <% end %>
+    <% end %>
+
+  });
+  </script>
 <% end %>
 </div>
 <% if WikiPage.comments_enabled? && @context.allow_wiki_comments && !@page.new_record? %>
@@ -150,13 +158,20 @@ course will see this page first.  You can change that from [the course home page
     <%= render :partial => "wiki_pages/wiki_page_comment_form" %>
   <% end %>
   <%= render :partial => "wiki_pages/wiki_page_comment", :collection => comments %>
-  <% js_block :i18n_scope => 'wiki_pages' do %>
+  <% js_block do %>
     <script type="text/javascript">
+    require([
+      'i18nObj',
+      'jquery' /* $ */,
+      'wiki',
+      'vendor/jquery.pageless' /* pageless */
+    ], function(I18n, $, wikiPage) {
+
       $(function(){
         $('#wiki_page_comments').pageless({
           totalPages: <%= comments.total_pages %>,
           url: "<%= context_url(@context, :context_wiki_page_wiki_page_comments_url, @page.id, :format => :json) %>",
-          loaderMsg: I18n.t('loading_comments', "Loading more results"),
+          loaderMsg: <%= jt('#wiki_pages.loading_comments', "Loading more results") %>,
           scrape: function(data) {
             if(typeof(data) == 'string') {
               try {
@@ -172,6 +187,7 @@ course will see this page first.  You can change that from [the course home page
           }
         });
       });
+    });
     </script>
   <% end %>
   <!-- will_paginate the rest -->

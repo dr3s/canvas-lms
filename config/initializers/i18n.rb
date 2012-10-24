@@ -29,7 +29,7 @@ module I18nUtilities
       text = "labels.#{text}" unless text.to_s =~ /\A#/
       text = t(text, options.delete(:en))
     end
-    text = before_label(text) if options[:before]
+    text = before_label(text) if options.delete(:before)
     return text, options
   end
 end
@@ -100,11 +100,19 @@ I18n.class_eval do
     end
     alias_method_chain :localize, :whitespace_removal
 
-    def translate_with_default_and_count_magic(key, *args)
+    # Public: If a localizer has been set, use it to set the locale and then
+    # delete it.
+    #
+    # Returns nothing.
+    def set_locale_with_localizer
       if @localizer
         self.locale = @localizer.call
         @localizer = nil
       end
+    end
+
+    def translate_with_default_and_count_magic(key, *args)
+      set_locale_with_localizer
 
       default = args.shift if args.first.is_a?(String) || args.size > 1
       options = args.shift || {}
@@ -155,9 +163,13 @@ I18n.class_eval do
 end
 
 ActionView::Base.class_eval do
+  def i18n_scope
+    "#{template.base_path}.#{template.name.sub(/\A_/, '')}"
+  end
+
   def translate(key, default, options = {})
     key = key.to_s
-    key = "#{template.base_path}.#{template.name.sub(/\A_/, '')}.#{key}" unless key.sub!(/\A#/, '')
+    key = "#{i18n_scope}.#{key}" unless key.sub!(/\A#/, '')
     I18n.translate(key, default, options)
   end
   alias :t :translate

@@ -32,6 +32,13 @@ module Canvas
     # create the redis cluster connection using config/redis.yml
     redis_settings = Setting.from_config('redis')
     raise("Redis is not enabled for this install") if redis_settings.blank?
+    @redis = redis_from_config(redis_settings)
+  end
+
+  # Builds a redis object using a config hash in the format used by a couple
+  # different config/*.yml files, like redis.yml, cache_store.yml and
+  # delayed_jobs.yml
+  def self.redis_from_config(redis_settings)
     Bundler.require 'redis'
     if redis_settings.is_a?(Array)
       redis_settings = { :servers => redis_settings }
@@ -40,26 +47,35 @@ module Canvas
     redis_settings[:servers].map! { |s|
       ::Redis::Factory.convert_to_redis_client_options(s).merge(:marshalling => false)
     }
-    @redis = ::Redis::Factory.create(redis_settings[:servers])
+    redis = ::Redis::Factory.create(redis_settings[:servers])
     if redis_settings[:database].present?
-      @redis.select(redis_settings[:database])
+      redis.select(redis_settings[:database])
     end
-    @redis
+    redis
   end
 
   def self.redis_enabled?
     @redis_enabled ||= Setting.from_config('redis').present?
   end
 
-  def self.cache_store_config
+  def self.reconnect_redis
+    @redis = nil
+    if Rails.cache && Rails.cache.respond_to?(:reconnect)
+      Canvas::Redis.handle_redis_failure(nil, "none") do
+        Rails.cache.reconnect
+      end
+    end
+  end
+
+  def self.cache_store_config(rails_env = :current, nil_is_nil = false)
     cache_store_config = {
       'cache_store' => 'mem_cache_store',
-    }.merge(Setting.from_config('cache_store') || {})
+    }.merge(Setting.from_config('cache_store', rails_env) || {})
     config = nil
     case cache_store_config.delete('cache_store')
     when 'mem_cache_store'
       cache_store_config['namespace'] ||= cache_store_config['key']
-      servers = cache_store_config['servers'] || (Setting.from_config('memcache'))
+      servers = cache_store_config['servers'] || (Setting.from_config('memcache', rails_env))
       if servers
         config = :mem_cache_store, servers, cache_store_config
       end
@@ -70,12 +86,16 @@ module Canvas
       #
       # the only options currently supported in redis-cache are the list of
       # servers, not key prefix or database names.
-      cache_store_config = (Setting.from_config('redis') || {}).merge(cache_store_config)
+      cache_store_config = (Setting.from_config('redis', rails_env) || {}).merge(cache_store_config)
       cache_store_config['key_prefix'] ||= cache_store_config['key']
       servers = cache_store_config['servers']
       config = :redis_store, servers
+    when 'memory_store'
+      config = :memory_store
+    when 'nil_store'
+      config = :nil_store
     end
-    unless config
+    if !config && !nil_is_nil
       config = :nil_store
     end
     config
@@ -106,5 +126,62 @@ module Canvas
       # TODO: use ps to grab this
       [ 0, 0 ]
     end
+  end
+
+  # can be called by plugins to allow reloading of that plugin in dev mode
+  # pass in the path to the plugin directory
+  # e.g., in the vendor/plugins/<plugin_name>/init.rb:
+  #     Canvas.reloadable_plugin(File.dirname(__FILE__))
+  def self.reloadable_plugin(dirname)
+    return unless Rails.env.development?
+    base_path = File.expand_path(dirname)
+    ActiveSupport::Dependencies.load_once_paths.reject! { |p|
+      p[0, base_path.length] == base_path
+    }
+  end
+
+  def self.revision
+    return @revision unless @revision.nil?
+    if File.file?(Rails.root+"VERSION")
+      @revision = File.readlines(Rails.root+"VERSION").first.try(:strip)
+    end
+    @revision ||= false
+  end
+
+  # protection against calling external services that could timeout or misbehave.
+  # we keep track of timeouts in redis, and if a given service times out more
+  # than X times before the redis key expires in Y seconds (reset on each
+  # failure), we stop even trying to contact the service until the Y seconds
+  # passes.
+  #
+  # if redis isn't enabled, we'll still apply the timeout, but we won't track failures.
+  #
+  # all the configurable params have service-specific Settings with fallback to
+  # generic Settings.
+  def self.timeout_protection(service_name)
+    redis_key = "service:timeouts:#{service_name}"
+    if Canvas.redis_enabled?
+      cutoff = (Setting.get_cached("service_#{service_name}_cutoff", nil) || Setting.get_cached("service_generic_cutoff", 3.to_s)).to_i
+      error_count = Canvas.redis.get(redis_key)
+      if error_count.to_i >= cutoff
+        Rails.logger.error("Skipping service call due to error count: #{service_name} #{error_count}")
+        return
+      end
+    end
+
+    timeout = (Setting.get_cached("service_#{service_name}_timeout", nil) || Setting.get_cached("service_generic_timeout", 15.seconds.to_s)).to_f
+    Timeout.timeout(timeout) do
+      yield
+    end
+  rescue Timeout::Error => e
+    ErrorReport.log_exception(:service_timeout, e)
+    if Canvas.redis_enabled?
+      error_ttl = (Setting.get_cached("service_#{service_name}_error_ttl", nil) || Setting.get_cached("service_generic_error_ttl", 1.minute.to_s)).to_i
+      Canvas.redis.pipelined do
+        Canvas.redis.incrby(redis_key, 1)
+        Canvas.redis.expire(redis_key, error_ttl)
+      end
+    end
+    return nil
   end
 end

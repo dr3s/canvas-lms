@@ -5,6 +5,7 @@ class AssessmentItemConverter
   DEFAULT_INCORRECT_WEIGHT = 0
   DEFAULT_POINTS_POSSIBLE = 1
   UNSUPPORTED_TYPES = ['File Upload', 'Hot Spot', 'Quiz Bowl', 'WCT_JumbledSentence', 'file_upload_question']
+  WEBCT_REL_REGEX = "/webct/RelativeResourceManager/Template/"
 
   attr_reader :base_dir, :identifier, :href, :interaction_type, :title, :question
 
@@ -75,6 +76,8 @@ class AssessmentItemConverter
           @question[:question_text] += "\n<br/>\n" if i > 0
           @question[:question_text] += sanitize_html_string(text.text)
         end
+      elsif text = @doc.at_css('itemBody > div.text')
+        @question[:question_text] = sanitize_html!(text)
       elsif text = @doc.at_css('itemBody div:first-child') || @doc.at_css('itemBody p:first-child') || @doc.at_css('itemBody div') || @doc.at_css('itemBody p')
         @question[:question_text] = sanitize_html!(text)
       elsif @doc.at_css('itemBody')
@@ -219,6 +222,10 @@ class AssessmentItemConverter
     sanitize_html!(Nokogiri::HTML::DocumentFragment.parse(string), remove_extraneous_nodes)
   end
 
+  def find_best_path_match(path)
+    @path_map[path] || @path_map[@sorted_paths.find{|k| k.end_with?(path)}]
+  end
+
   def sanitize_html!(node, remove_extraneous_nodes=false)
     # root may not be an html element, so we just sanitize its children so we
     # don't blow away the whole thing
@@ -233,12 +240,27 @@ class AssessmentItemConverter
         attrs.each do |attr|
           if subnode[attr]
             val = URI.unescape(subnode[attr])
-            val.gsub!(/\$[A-Z_]*\$/, '') # remove any path tokens like $TOKEN_EH$
-            # try to find the file by exact path match. If not found, try to find best match
-            mig_id = @path_map[val]
-            mig_id ||= @path_map[@sorted_paths.find{|k| k.end_with?(val)}]
-            if mig_id
-              subnode[attr] = "#{CC::CCHelper::OBJECT_TOKEN}/attachments/#{mig_id}"
+            if val.start_with?( WEBCT_REL_REGEX)
+              # It's from a webct package so the references may not be correct
+              # Take a path like: /webct/RelativeResourceManager/Template/Imported_Resources/qti web/f11g3_r.jpg
+              # Reduce to: Imported_Resources/qti web/f11g3_r.jpg
+              val.gsub!(WEBCT_REL_REGEX)
+
+              # Sometimes that path exists, sometimes the desired file is just in the top-level with the .xml files
+              # So check for the file starting with the full relative path, going down to just the file name
+              paths = val.split("/")
+              paths.length.times do |i|
+                if mig_id = find_best_path_match(paths[i..-1].join('/'))
+                  subnode[attr] = "#{CC::CCHelper::OBJECT_TOKEN}/attachments/#{mig_id}"
+                  break
+                end
+              end
+            else
+              val.gsub!(/\$[A-Z_]*\$/, '') # remove any path tokens like $TOKEN_EH$
+              # try to find the file by exact path match. If not found, try to find best match
+              if mig_id = find_best_path_match(val)
+                subnode[attr] = "#{CC::CCHelper::OBJECT_TOKEN}/attachments/#{mig_id}"
+              end
             end
           end
         end
@@ -257,6 +279,8 @@ class AssessmentItemConverter
           child.remove
         end
         break unless node.children.size == 1 && ['p', 'div', 'span'].include?(node.child.name)
+        break if !node.child.attributes.empty? && !has_known_meta_class(node.child)
+
         node = node.child
       end
     end
@@ -264,8 +288,14 @@ class AssessmentItemConverter
 
     text = node.inner_html.strip
     # Clear WebCT-specific relative paths
-    text.gsub!(%r{/webct/RelativeResourceManager/Template/}, '')
-    text.gsub(%r{/webct/urw/[^/]+/RelativeResourceManager\?contentID=(\d*)}, "$CANVAS_OBJECT_REFERENCE$/attachments/\\1")
+    text.gsub!(WEBCT_REL_REGEX, '')
+    text.gsub(%r{/?webct/urw/[^/]+/RelativeResourceManager\?contentID=(\d*)}, "$CANVAS_OBJECT_REFERENCE$/attachments/\\1")
+  end
+
+  KNOWN_META_CLASSES = ['FORMATTED_TEXT_BLOCK', 'flow_1']
+  def has_known_meta_class(node)
+    return false unless node.attributes['class']
+    KNOWN_META_CLASSES.member?(node.attributes['class'].value)
   end
   
   def self.get_interaction_type(manifest_node)

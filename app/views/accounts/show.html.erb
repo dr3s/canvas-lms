@@ -15,8 +15,8 @@
   <% end %>
   <% if @associated_courses_count > @maximum_courses_im_gonna_show %>
     <p class='ui-state-highlight' style='padding:0.7em;'>
-      <%= t(:too_many_courses_message, { :other => "There are too many courses to show (%{count}). " +
-      "Please use the finder on the right to find a specific course." }, :count => @associated_courses_count) %>
+      <%= t(:too_many_courses_message, "There are too many courses to show (%{count}). " +
+      "Please use the finder on the right to find a specific course.", :count => @associated_courses_count) %>
     </p>
   <% end %>
 
@@ -34,29 +34,5 @@
     <%= render :partial => "course" %>
   </ul>
 <% end %>
-<% js_block do %>
-<script type="text/javascript">
-$(document).ready(function() {
-  
-  $(".courses .course,.groups .group").bind('focus mouseover', function(event) {
-    $(this).find(".info").addClass('info_hover');
-  });
-  $(".courses .course,.groups .group").bind('blur mouseout', function(event) {
-    $(this).find(".info").removeClass('info_hover');
-  });
-  if($("#new_course").length > 0) {
-    var reEscape = new RegExp('(\\' + ['/', '.', '*', '+', '?', '|', '(', ')', '[', ']', '{', '}', '\\'].join('|\\') + ')', 'g');
-    var $newCourseForm = $("#new_course"),
-        $courseName = $("#course_name");
-    $courseName.autocomplete({
-      minLength: 4,
-      delay: 150, //miliseconds
-      source: $newCourseForm[0].action + ".json",
-      select: function(event, ui){
-        window.location = $newCourseForm[0].action + "/" + ui.item.id
-      }
-    });
-  }
-});
-</script>
-<% end %>
+
+<% js_bundle :account_show %>

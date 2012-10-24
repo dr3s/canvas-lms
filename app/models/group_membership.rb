@@ -23,22 +23,26 @@ class GroupMembership < ActiveRecord::Base
   belongs_to :group
   belongs_to :user
 
-  attr_accessible :group, :user
+  attr_accessible :group, :user, :workflow_state, :moderator
   
   before_save :ensure_mutually_exclusive_membership
   before_save :assign_uuid
+  before_save :auto_join
   before_save :capture_old_group_id
+
   before_validation :verify_section_homogeneity_if_necessary
-  
+
   after_save :touch_groups
-  
+  after_save :check_auto_follow_group
   before_destroy :touch_groups
+  after_destroy :check_auto_follow_group
   
   has_a_broadcast_policy
   
   named_scope :include_user, :include => :user
   
   named_scope :active, :conditions => ['group_memberships.workflow_state != ?', 'deleted']
+  named_scope :moderators, :conditions => { :moderator => true }
   
   set_broadcast_policy do |p|
     p.dispatch :new_context_group_membership
@@ -51,7 +55,7 @@ class GroupMembership < ActiveRecord::Base
     
     p.dispatch :group_membership_accepted
     p.to { self.user }
-    p.whenever {|record| record.changed_state(:available, :requested) }
+    p.whenever {|record| record.changed_state(:accepted, :requested) }
     
     p.dispatch :group_membership_rejected
     p.to { self.user }
@@ -70,9 +74,17 @@ class GroupMembership < ActiveRecord::Base
   
   def assign_uuid
     self.uuid ||= AutoHandle.generate_securish_uuid
-    self.workflow_state = 'accepted' if self.requested? && self.group && self.group.free_association?(self.user)
   end
   protected :assign_uuid
+
+  # auto accept 'requested' or 'invited' memberships until we implement
+  # accepting requests/invitations
+  def auto_join
+    return true if self.group.try(:group_category).try(:communities?)
+    self.workflow_state = 'accepted' if self.group && (self.requested? || self.invited?)
+    true
+  end
+  protected :auto_join
 
   def ensure_mutually_exclusive_membership
     return unless self.group
@@ -92,8 +104,18 @@ class GroupMembership < ActiveRecord::Base
   attr_accessor :old_group_id
   def capture_old_group_id
     self.old_group_id = self.group_id_was if self.group_id_changed?
+    true
   end
   protected :capture_old_group_id
+
+  def check_auto_follow_group
+    if (self.id_changed? || self.workflow_state_changed?) && self.active?
+      UserFollow.create_follow(self.user, self.group)
+    elsif self.destroyed? || (self.workflow_state_changed? && self.deleted?)
+      user_follow = self.user.shard.activate { self.user.user_follows.find(:first, :conditions => { :followed_item_id => self.group_id, :followed_item_type => 'Group' }) }
+      user_follow.try(:destroy)
+    end
+  end
   
   def touch_groups
     groups_to_touch = [ self.group_id ]
@@ -112,14 +134,32 @@ class GroupMembership < ActiveRecord::Base
     state :rejected
     state :deleted
   end
+  alias_method :active?, :accepted?
   
   def self.serialization_excludes; [:uuid]; end
 
   # true iff 'active' and the pair of user and group's course match one of the
   # provided enrollments
   def active_given_enrollments?(enrollments)
-    state != :requested && state != :deleted && 
-    (!self.group.context.is_a?(Course) ||
+    accepted? && (!self.group.context.is_a?(Course) ||
      enrollments.any?{ |e| e.user == self.user && e.course == self.group.context })
+  end
+
+  set_policy do
+    # for non-communities, people can be put into groups by users who can manage groups at the context level,
+    # but not moderators (hence :manage_groups)
+    given { |user, session| user && self.user && self.group && !self.group.group_category.try(:communities?) && ((user == self.user && self.group.grants_right?(user, session, :join)) || (self.group.grants_right?(self.user, session, :participate) && self.group.context && self.group.context.grants_right?(user, session, :manage_groups))) }
+    can :create
+
+    # for communities, users must initiate in order to be added to a group
+    given { |user, session| user && self.group && user == self.user && self.group.grants_right?(user, :join) && self.group.group_category.try(:communities?) }
+    can :create
+
+    given { |user, session| user && self.group && self.group.grants_right?(user, session, :manage) }
+    can :update
+
+    # allow moderators to kick people out (hence :manage instead of :manage_groups on the context)
+    given { |user, session| user && self.user && self.group && ((user == self.user && self.group.grants_right?(self.user, session, :leave)) || self.group.grants_right?(user, session, :manage)) }
+    can :delete
   end
 end

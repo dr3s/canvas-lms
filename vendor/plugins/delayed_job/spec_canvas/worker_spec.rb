@@ -1,46 +1,125 @@
-require File.expand_path("../spec_helper", __FILE__)
-
-describe Delayed::Worker do
+shared_examples_for 'Delayed::Worker' do
   def job_create(opts = {})
     Delayed::Job.create({:payload_object => SimpleJob.new, :queue => Delayed::Worker.queue}.merge(opts))
   end
   def worker_create(opts = {})
     Delayed::Worker.new(opts.merge(:max_priority => nil, :min_priority => nil, :quiet => true))
   end
+  def adjust_max_run_time(new_time)
+    old_max_run_time = Delayed::Worker.max_run_time
+    Delayed::Worker.max_run_time = new_time
+    yield
+  ensure
+    Delayed::Worker.max_run_time = old_max_run_time
+  end
 
   before(:each) do
     @worker = worker_create
-    Delayed::Job.delete_all
-    Delayed::Job::Failed.delete_all
     SimpleJob.runs = 0
     Delayed::Worker.on_max_failures = nil
+    Setting.set('delayed_jobs_sleep_delay', '0.01')
   end
 
   describe "running a job" do
     it "should fail after Worker.max_run_time" do
-      begin
-        old_max_run_time = Delayed::Worker.max_run_time
-        Delayed::Worker.max_run_time = 1.second
+      adjust_max_run_time 0.01 do
         @job = Delayed::Job.create :payload_object => LongRunningJob.new
         @worker.perform(@job)
         @job.reload.last_error.should =~ /expired/
         @job.attempts.should == 1
-      ensure
-        Delayed::Worker.max_run_time = old_max_run_time
+      end
+    end
+
+    it "should not fail when running a job with a % in the name" do
+      @job = User.send_later(:name_parts, "Some % Name")
+      @worker.perform(@job.reload)
+    end
+  end
+
+  describe "running a batch" do
+    context "serially" do
+      it "should run each job in order" do
+        bar = "bar"
+        seq = sequence("bar")
+        bar.expects(:scan).with("b").in_sequence(seq)
+        bar.expects(:scan).with("a").in_sequence(seq)
+        bar.expects(:scan).with("r").in_sequence(seq)
+        batch = Delayed::Batch::PerformableBatch.new(:serial, [
+          { :payload_object => Delayed::PerformableMethod.new(bar, :scan, ["b"]) },
+          { :payload_object => Delayed::PerformableMethod.new(bar, :scan, ["a"]) },
+          { :payload_object => Delayed::PerformableMethod.new(bar, :scan, ["r"]) },
+        ])
+
+        batch_job = Delayed::Job.create :payload_object => batch
+        Delayed::Stats.expects(:job_complete).times(4) # batch, plus all jobs
+        @worker.perform(batch_job).should == 3
+      end
+    
+      it "should succeed regardless of the success/failure of its component jobs" do
+        batch = Delayed::Batch::PerformableBatch.new(:serial, [
+          { :payload_object => Delayed::PerformableMethod.new("foo", :reverse, []) },
+          { :payload_object => Delayed::PerformableMethod.new(1, :/, [0]) },
+          { :payload_object => Delayed::PerformableMethod.new("bar", :scan, ["r"]) },
+        ])
+        batch_job = Delayed::Job.create :payload_object => batch
+
+        Delayed::Stats.expects(:job_complete).times(3) # batch, plus two successful jobs
+        @worker.perform(batch_job).should == 3
+
+        to_retry = Delayed::Job.list_jobs(:future, 100)
+        to_retry.size.should eql 1
+        to_retry[0].payload_object.method.should eql :/
+        to_retry[0].last_error.should =~ /divided by 0/
+        to_retry[0].attempts.should == 1
+      end
+
+      it "should fail an individual job after Worker.max_run_time, but not the batch itself" do
+        adjust_max_run_time 0.01 do
+          foo = "foo"
+          foo.expects(:reverse).once
+          bar = "bar"
+          bar.expects(:scan).once
+  
+          batch = Delayed::Batch::PerformableBatch.new(:serial, [
+            { :payload_object => Delayed::PerformableMethod.new(foo, :reverse, []) },
+            { :payload_object => Delayed::PerformableMethod.new(Kernel, :sleep, [250]) },
+            { :payload_object => Delayed::PerformableMethod.new(bar, :scan, ["r"]) },
+          ])
+          batch_job = Delayed::Job.create :payload_object => batch
+          
+          Delayed::Stats.expects(:job_complete).times(3) # batch, plus two successful jobs
+          @worker.perform(batch_job).should == 3
+  
+          failed_jobs = Delayed::Job.list_jobs(:future, 100)
+          failed_jobs.size.should eql 1
+          failed_jobs[0].last_error.should =~ /expired/
+          failed_jobs[0].attempts.should == 1
+        end
+      end
+  
+      it "should retry a failed individual job" do
+        batch = Delayed::Batch::PerformableBatch.new(:serial, [
+          { :payload_object => Delayed::PerformableMethod.new(1, :/, [0]) },
+        ])
+        batch_job = Delayed::Job.create :payload_object => batch
+
+        @worker.expects(:reschedule).once
+        Delayed::Stats.expects(:job_complete).times(1) # just the batch
+        @worker.perform(batch_job).should == 1
       end
     end
   end
-  
+
   context "worker prioritization" do
     before(:each) do
-      @worker = Delayed::Worker.new(:max_priority => 5, :min_priority => -5, :quiet => true)
+      @worker = Delayed::Worker.new(:max_priority => 5, :min_priority => 2, :quiet => true)
     end
 
     it "should only run jobs that are >= min_priority" do
       SimpleJob.runs.should == 0
 
-      job_create(:priority => -10)
-      job_create(:priority => 0)
+      job_create(:priority => 1)
+      job_create(:priority => 3)
       @worker.run
 
       SimpleJob.runs.should == 1
@@ -50,7 +129,7 @@ describe Delayed::Worker do
       SimpleJob.runs.should == 0
 
       job_create(:priority => 10)
-      job_create(:priority => 0)
+      job_create(:priority => 4)
 
       @worker.run
 
@@ -93,11 +172,11 @@ describe Delayed::Worker do
     it "should record last_error when destroy_failed_jobs = false, max_attempts = 1" do
       Delayed::Worker.on_max_failures = proc { false }
       @job.update_attribute(:max_attempts, 1)
-      @job.lock_exclusively!(Delayed::Worker.max_run_time, @worker.name).should == true
+      Delayed::Job.get_and_lock_next_available('w1').should == @job.reload
       @worker.perform(@job)
       old_id = @job.id
-      @job = Delayed::Job::Failed.first
-      @job.original_id.should == old_id
+      @job = Delayed::Job.list_jobs(:failed, 1).first
+      (@job.respond_to?(:original_id) ? @job.original_id : @job.id).should == old_id
       @job.last_error.should =~ /did not work/
       @job.last_error.should =~ /worker_spec.rb/
       @job.attempts.should == 1
@@ -107,10 +186,7 @@ describe Delayed::Worker do
       # job stays locked after failing, for record keeping of time/worker
       @job.should be_locked
 
-      all_jobs = Delayed::Job.all_available(@worker.name,
-                                 Delayed::Worker.max_run_time,
-                                 @job.queue)
-      all_jobs.find_by_id(@job.id).should be_nil
+      Delayed::Job.find_available(100, @job.queue).should == []
     end
     
     it "should re-schedule jobs after failing" do
@@ -160,7 +236,7 @@ describe Delayed::Worker do
       it "should be failed if it failed more than Worker.max_attempts times" do
         @job.reload.failed_at.should == nil
         Delayed::Worker.max_attempts.times { @worker.reschedule(@job) }
-        Delayed::Job::Failed.count.should == 1
+        Delayed::Job.list_jobs(:failed, 100).size.should == 1
       end
 
       it "should not be failed if it failed fewer than Worker.max_attempts times" do
@@ -194,10 +270,9 @@ describe Delayed::Worker do
 
   context "Queue workers" do
     before :each do
-      Delayed::Worker.queue = nil
+      Delayed::Worker.queue = "Queue workers test"
       job_create(:queue => 'queue1')
       job_create(:queue => 'queue2')
-      job_create(:queue => nil)
     end
 
     it "should only work off jobs assigned to themselves" do
@@ -222,13 +297,6 @@ describe Delayed::Worker do
       SimpleJob.runs.should == 0
     end
 
-    it "should run non-named queue jobs when the queue has no name set" do
-      worker = worker_create(:queue=>nil)
-      SimpleJob.runs.should == 0
-      worker.run
-      SimpleJob.runs.should == 1
-    end
-    
     it "should get the default queue if none is set" do
       queue_name = "default_queue"
       Delayed::Worker.queue = queue_name
@@ -241,11 +309,6 @@ describe Delayed::Worker do
       Delayed::Worker.queue = "default_queue"
       worker = worker_create(:queue=>queue_name)
       worker.queue.should == queue_name
-    end
-    
-    it "shouldn't have a queue if none is set" do
-      worker = worker_create(:queue=>nil)
-      worker.queue.should == nil
     end
   end
 end

@@ -21,7 +21,7 @@ class UserService < ActiveRecord::Base
   
   belongs_to :user
   attr_accessor :password
-  attr_accessible :user, :service, :protocol, :token, :secret, :service_user_url, :service_user_id, :service_user_name, :service_domain
+  attr_accessible :user, :service, :protocol, :token, :secret, :service_user_url, :service_user_id, :service_user_name, :service_domain, :visible
   
   before_save :infer_defaults
   after_save :assert_relations
@@ -29,7 +29,7 @@ class UserService < ActiveRecord::Base
   after_destroy :remove_related_channels
   
   def should_have_communication_channel?
-    ['facebook', 'twitter'].include?(service) && self.user
+    [CommunicationChannel::TYPE_FACEBOOK, CommunicationChannel::TYPE_TWITTER].include?(service) && self.user
   end
   
   def assert_relations
@@ -47,15 +47,15 @@ class UserService < ActiveRecord::Base
   end
   
   def remove_related_channels
-    if self.service == 'facebook' && self.user
-      ccs = self.user.communication_channels.find_all_by_path_type('facebook')
+    if self.service == CommunicationChannel::TYPE_FACEBOOK && self.user
+      ccs = self.user.communication_channels.find_all_by_path_type(CommunicationChannel::TYPE_FACEBOOK)
       ccs.each{|cc| cc.destroy }
     end
     true
   end
   
   def assert_communication_channel
-    self.touch if should_have_communication_channel? && !self.user.communication_channels.find_by_path_type('twitter')
+    self.touch if should_have_communication_channel? && !self.user.communication_channels.find_by_path_type(CommunicationChannel::TYPE_TWITTER)
   end
   
   def infer_defaults
@@ -89,6 +89,7 @@ class UserService < ActiveRecord::Base
       { :conditions => ['user_services.service = ?', service.to_s]}
     end
   }
+  named_scope :visible, {:conditions => 'visible'}
   
   def service_name
     self.service.titleize rescue ""
@@ -169,9 +170,9 @@ class UserService < ActiveRecord::Base
       1
     when 'skype'
       3
-    when 'twitter'
+    when CommunicationChannel::TYPE_TWITTER
       4
-    when 'facebook'
+    when CommunicationChannel::TYPE_FACEBOOK
       5
     when 'delicious'
       7
@@ -190,9 +191,9 @@ class UserService < ActiveRecord::Base
       t '#user_service.descriptions.google_docs', 'Students can use Google Docs to collaborate on group projects.  Google Docs allows for real-time collaborative editing of documents, spreadsheets and presentations.'
     when 'google_calendar'
       ''
-    when 'twitter'
+    when CommunicationChannel::TYPE_TWITTER
       t '#user_service.descriptions.twitter', 'Twitter is a great resource for out-of-class communication.'
-    when 'facebook'
+    when CommunicationChannel::TYPE_FACEBOOK
       t '#user_service.descriptions.facebook', 'Listing your Facebook profile will let you more easily connect with friends you make in your classes and groups.'
     when 'delicious'
       t '#user_service.descriptions.delicious', 'Delicious is a collaborative link-sharing tool.  You can tag any page on the Internet for later reference.  You can also link to other users\' Delicious accounts to share links of similar interest.'
@@ -213,9 +214,9 @@ class UserService < ActiveRecord::Base
       'http://docs.google.com'
     when 'google_calendar'
       'http://calendar.google.com'
-    when 'twitter'
+    when CommunicationChannel::TYPE_TWITTER
       'http://twitter.com/signup'
-    when 'facebook'
+    when CommunicationChannel::TYPE_FACEBOOK
       'http://www.facebook.com'
     when 'delicious'
       'http://delicious.com/'
@@ -244,9 +245,9 @@ class UserService < ActiveRecord::Base
         'http://docs.google.com'
       when 'google_calendar'
         'http://calendar.google.com'
-      when 'twitter'
+      when CommunicationChannel::TYPE_TWITTER
         "http://www.twitter.com/#{service_user_name}"
-      when 'facebook'
+      when CommunicationChannel::TYPE_FACEBOOK
         "http://www.facebook.com/profile.php?id=#{service_user_id}"
       when 'delicious'
         "http://www.delicious.com/#{service_user_name}"

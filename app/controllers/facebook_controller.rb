@@ -25,15 +25,14 @@ class FacebookController < ApplicationController
   def notification_preferences
     @cc = @user.communication_channels.find_by_path_type('facebook')
     if @cc
-      @old_policies = @user.notification_policies.for_channel(@cc)
+      @old_policies = @cc.notification_policies
       @policies = []
       params[:types].each do |type, frequency|
         notifications = Notification.find_all_by_category(type)
         notifications.each do |notification|
-          pref = @user.notification_policies.new
+          pref = @cc.notification_policies.new
           pref.notification_id = notification.id
           pref.frequency = frequency
-          pref.communication_channel_id = @cc.id
           @policies << pref unless frequency == 'never'
         end
       end
@@ -44,12 +43,12 @@ class FacebookController < ApplicationController
     end
     # TODO: i18n... see notification.rb
     @notification_categories = Notification.dashboard_categories.reject{|c| c.category == "Summaries"}
-    @policies = @user.notification_policies.for_channel(@cc)
+    @policies = @cc.notification_policies
     redirect_to facebook_settings_url
   end
   
   def hide_message
-    @message = Message.for_user(@user.id).to_facebook.find(params[:id])
+    @message = @user.messages.to_facebook.find(params[:id])
     @message.destroy
     render :json => @message.to_json
   end
@@ -62,7 +61,7 @@ class FacebookController < ApplicationController
     flash[:notice] = t :authorization_success, "Authorization successful!  Canvas and Facebook are now friends." if params[:just_authorized]
     @messages = []
     if @user
-      @messages = Message.for_user(@user.id).to_facebook.to_a
+      @messages = @user.messages.to_facebook.to_a
       Facebook.dashboard_clear_count(@service) if @service
       @domains = @user.pseudonyms.scoped({:include => :account}).to_a.once_per(&:account_id).map{|p| HostUrl.context_host(p.account) }.uniq
     end
@@ -74,7 +73,7 @@ class FacebookController < ApplicationController
   def settings
     @notification_categories = Notification.dashboard_categories
     @cc = @user && @user.communication_channels.find_by_path_type('facebook')
-    @policies = @user && @user.notification_policies.for_channel(@cc)
+    @policies = @cc.try(:notification_policies)
     respond_to do |format|
       format.html { render :action => 'settings', :layout => 'facebook' }
     end
@@ -108,22 +107,40 @@ class FacebookController < ApplicationController
     if params[:signed_request]
       data, sig = Facebook.parse_signed_request(params[:signed_request])
       if data && sig
-        @facebook_user_id = data['user_id']
-        @service = UserService.find_by_service_and_service_user_id('facebook', @facebook_user_id)
-        @service.update_attribute(:token, data['oauth_token']) if @service && !@service.token && data['oauth_token']
-        @user = @service && @service.user
-        session[:facebook_user_id] = @facebook_user_id
+        if @facebook_user_id = data['user_id']
+          Shard.with_each_shard do
+            @service = UserService.find_by_service_and_service_user_id('facebook', @facebook_user_id)
+            break if @service
+          end
+        end
+        if @service
+          @service.update_attribute(:token, data['oauth_token']) if !@service.token && data['oauth_token']
+          @user = @service.user
+        end
+        session[:facebook_canvas_user_id] = @user.id if @user
         return true
       else
         flash[:error] = t :invalid_signature, "Invalid Facebook signature"
         redirect_to dashboard_url
         return false
       end
+    elsif session[:facebook_canvas_user_id]
+      @user = User.find(session[:facebook_canvas_user_id])
+      @service = @user.user_services.find_by_service('facebook')
     elsif session[:facebook_user_id]
       @facebook_user_id = session[:facebook_user_id]
-      @service = UserService.find_by_service_and_service_user_id('facebook', @facebook_user_id)
+      Shard.with_each_shard do
+        @service = UserService.find_by_service_and_service_user_id('facebook', @facebook_user_id)
+        break if @service
+      end
       @user = @service && @service.user
-      session[:facebook_user_id] = @facebook_user_id
+      session[:facebook_canvas_user_id] = @user.id if @user
+    elsif params[:force_view] == '1'
+      if @current_user
+        @user = @current_user
+        session[:facebook_canvas_user_id] = @user.id
+        @service = @user.user_services.find_by_service('facebook')
+      end
     end
   end
 end

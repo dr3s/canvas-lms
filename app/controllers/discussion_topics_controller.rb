@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2012 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -18,108 +18,165 @@
 
 # @API Discussion Topics
 #
-# API for accessing and participating in discussion topics in groups and courses.
+# A discussion topic object looks like:
+#
+#      !!!javascript
+#      {
+#        // The ID of this topic.
+#        "id":1,
+#
+#        // The topic title.
+#        "title":"Topic 1",
+#
+#        // The HTML content of the message body.
+#        "message":"<p>content here</p>",
+#
+#        // The URL to the discussion topic in canvas.
+#        "html_url": "https://<canvas>/courses/1/discussion_topics/2",
+#
+#        // The datetime the topic was posted. If it is null it hasn't been
+#        // posted yet. (see delayed_post_at)
+#        "posted_at":"2037-07-21T13:29:31Z",
+#
+#        // The datetime for when the last reply was in the topic.
+#        "last_reply_at":"2037-07-28T19:38:31Z",
+#
+#        // If true then a user may not respond to other replies until that user
+#        // has made an initial reply. Defaults to false.
+#        "require_initial_post":false,
+#
+#        // The count of entries in the topic.
+#        "discussion_subentry_count":0,
+#
+#        // The read_state of the topic for the current user, "read" or "unread".
+#        "read_state":"read",
+#
+#        // The count of unread entries of this topic for the current user.
+#        "unread_count":0,
+#
+#        // The unique identifier of the assignment if the topic is for grading, otherwise null.
+#        "assignment_id":null,
+#
+#        // The datetime to publish the topic (if not right away).
+#        "delayed_post_at":null,
+#
+#        // whether or not this is locked for students to see.
+#        "locked":false,
+#
+#        // The username of the topic creator.
+#        "user_name":"User Name",
+#
+#        // An array of topic_ids for the group discussions the user is a part of.
+#        "topic_children":[5, 7, 10],
+#
+#        // If the topic is for grading and a group assignment this will
+#        // point to the original topic in the course.
+#        "root_topic_id":null,
+#
+#        // If the topic is a podcast topic this is the feed url for the current user.
+#        "podcast_url":"/feeds/topics/1/enrollment_1XAcepje4u228rt4mi7Z1oFbRpn3RAkTzuXIGOPe.rss",
+#
+#        // The type of discussion. Values are 'side_comment', for discussions
+#        // that only allow one level of nested comments, and 'threaded' for
+#        // fully threaded discussions.
+#        "discussion_type":"side_comment",
+#
+#        // Array of file attachments.
+#        "attachments":[
+#          {
+#            "content-type":"unknown/unknown",
+#            "url":"http://www.example.com/courses/1/files/1/download",
+#            "filename":"content.txt",
+#            "display_name":"content.txt"
+#          }
+#        ],
+#
+#        // The current user's permissions on this topic.
+#        "permissions":
+#        {
+#          // If true, the calling user can attach files to this discussion's entries.
+#          "attach": true
+#        }
+#      }
 class DiscussionTopicsController < ApplicationController
   before_filter :require_context, :except => :public_feed
-  
-  add_crumb(proc { t('#crumbs.discussions', "Discussions")}, :except => [:public_feed]) { |c| c.send :named_context_url, c.instance_variable_get("@context"), :context_discussion_topics_url }
-  before_filter { |c| c.active_tab = "discussions" }  
-  
+
   include Api::V1::DiscussionTopics
-  
-  # @API
+  include Api::V1::Assignment
+
+  # @API List discussion topics
   #
-  # Returns the list of discussion topics for this course.
+  # Returns the paginated list of discussion topics for this course or group.
   #
-  # @response_field assignment_id The unique identifier of the assignment if the topic is for grading, otherwise null
-  # @response_field attachments Array of attachments
-  # @response_field delayed_post_at The datetime to post the topic (if not right away) 
-  # @response_field discussion_subentry_count The count of entries in the topic
-  # @response_field id The unique identifier for the discussion topic.
-  # @response_field last_reply_at The datetime for when the last reply was in the topic
-  # @response_field message The HTML content of the topic 
-  # @response_field podcast_url If the topic is a podcast topic this is the feed url for the current user
-  # @response_field posted_at The datetime the topic was posted. If it is null it hasn't been posted yet. (see delayed_post_at)
-  # @response_field require_initial_post If true then a user may not respond to other replies until that user has made an initial reply
-  # @response_field root_topic_id If the topic is for grading and a group assignment this will point to the original topic in the course
-  # @response_field title The title of the topic
-  # @response_field topic_children An array of topic_ids for the group discussions the user is a part of
-  # @response_field user_name The username of the creator
-  # @response_field url The URL to the discussion topic in canvas
-  #
-  # @example_response
-  #     [
-  #      {
-  #        "id":1,
-  #        "title":"Topic 1",
-  #        "message":"<p>content here</p>",
-  #        "posted_at":"2037-07-21T13:29:31Z",
-  #        "last_reply_at":"2037-07-28T19:38:31Z",
-  #        "require_initial_post":null,
-  #        "discussion_subentry_count":0,
-  #        "assignment_id":null,
-  #        "delayed_post_at":null,
-  #        "user_name":"User Name",
-  #        "topic_children":[],
-  #        "root_topic_id":null,
-  #        "podcast_url":"/feeds/topics/1/enrollment_1XAcepje4u228rt4mi7Z1oFbRpn3RAkTzuXIGOPe.rss",
-  #        "attachments":[
-  #          {
-  #            "content-type":"unknown/unknown",
-  #            "url":"http://www.example.com/courses/1/files/1/download",
-  #            "filename":"content.txt",
-  #            "display_name":"content.txt"
-  #          }
-  #        ]
-  #      }
-  #     ]
+  # @example_request
+  #     curl https://<canvas>/api/v1/courses/<course_id>/discussion_topics \ 
+  #          -H 'Authorization: Bearer <token>'
   def index
-    @context.assert_assignment_group rescue nil
-    @all_topics = @context.discussion_topics.active
-    @all_topics = @all_topics.only_discussion_topics if params[:include_announcements] != "1"
-    @topics = Api.paginate(@all_topics, self, topic_pagination_path).reject{|a| a.locked_for?(@current_user, :check_policies => true) }
     if authorized_action(@context.discussion_topics.new, @current_user, :read)
       return child_topic if params[:root_discussion_topic_id] && @context.respond_to?(:context) && @context.context && @context.context.discussion_topics.find(params[:root_discussion_topic_id])
       log_asset_access("topics:#{@context.asset_string}", "topics", 'other')
       respond_to do |format|
-        format.html
+        format.html do
+          @active_tab = "discussions"
+          add_crumb t('#crumbs.discussions', "Discussions"), named_context_url(@context, :context_discussion_topics_url)
+          js_env :permissions => {
+            :create => @context.discussion_topics.new.grants_right?(@current_user, session, :create),
+            :moderate => @context.grants_right?(@current_user, session, :moderate_forum)
+          }
+        end
         format.json do
+          # you can pass ?only_announcements=true to get announcements instead of discussions TODO: document
+          scope = (params[:only_announcements] ?
+                   @context.active_announcements :
+                   @context.active_discussion_topics.only_discussion_topics)
+          scope = scope.by_position
+          @topics = Api.paginate(scope, self, topic_pagination_path(:only_announcements => params[:only_announcements]))
+          @topics.reject! { |a| a.locked_for?(@current_user, :check_policies => true) }
+          @topics.each { |t| t.current_user = @current_user }
           if api_request?
             render :json => discussion_topics_api_json(@topics, @context, @current_user, session)
-          else
-            render :json => @topics.to_json(:methods => [:user_name, :discussion_subentry_count], :permissions => {:user => @current_user, :session => session })
           end
         end
       end
     end
   end
-  
-  def reorder
-    if authorized_action(@context, @current_user, :moderate_forum)
-      @topics = @context.discussion_topics
-      @topics.first.update_order(params[:order].split(",").map{|id| id.to_i}.reverse) unless @topics.empty?
-      flash[:notice] = t :reordered_topics_notice, "Topics successfully reordered"
-      redirect_to named_context_url(@context, :context_discussion_topics_url)
+
+  def new
+    @topic = @context.send(params[:is_announcement] ? :announcements : :discussion_topics).new
+    add_discussion_or_announcement_crumb
+    add_crumb t :create_new_crumb, "Create new"
+    edit
+  end
+
+  def edit
+    @topic ||= @context.all_discussion_topics.find(params[:id])
+    if authorized_action(@topic, @current_user, (@topic.new_record? ? :create : :update))
+      hash =  {
+        :URL_ROOT => named_context_url(@context, :api_v1_context_discussion_topics_url),
+        :PERMISSIONS => {
+          :CAN_CREATE_ASSIGNMENT => @context.respond_to?(:assignments) && @context.assignments.new.grants_right?(@current_user, session, :create),
+          :CAN_ATTACH => @topic.grants_right?(@current_user, session, :attach),
+          :CAN_MODERATE => @context.grants_right?(@current_user, session, :moderate_forum)
+        }
+      }
+
+      unless @topic.new_record?
+        add_discussion_or_announcement_crumb
+        add_crumb(@topic.title, named_context_url(@context, :context_discussion_topic_url, @topic.id))
+        add_crumb t :edit_crumb, "Edit"
+        hash[:ATTRIBUTES] = discussion_topic_api_json(@topic, @context, @current_user, session)
+      end
+      (hash[:ATTRIBUTES] ||= {})[:is_announcement] = @topic.is_announcement
+      js_env :DISCUSSION_TOPIC => hash
+      render :action => "edit"
     end
   end
-  
-  def child_topic
-    @root_topic = @context.context.discussion_topics.find(params[:root_discussion_topic_id])
-    @topic = @context.discussion_topics.find_or_initialize_by_root_topic_id(params[:root_discussion_topic_id])
-    @topic.message = @root_topic.message
-    @topic.title = @root_topic.title
-    @topic.assignment_id = @root_topic.assignment_id
-    @topic.user_id = @root_topic.user_id
-    @topic.save
-    redirect_to named_context_url(@context, :context_discussion_topic_url, @topic.id)
-  end
-  protected :child_topic
 
   def show
-    parent_id = params[:parent_id] || 0
+    parent_id = params[:parent_id]
     @topic = @context.all_discussion_topics.find(params[:id])
-    @assignment = @topic.assignment
     @context.assert_assignment_group rescue nil
+    add_discussion_or_announcement_crumb
     add_crumb(@topic.title, named_context_url(@context, :context_discussion_topic_url, @topic.id))
     if @topic.deleted?
       flash[:notice] = t :deleted_topic_notice, "That topic has been deleted"
@@ -128,208 +185,142 @@ class DiscussionTopicsController < ApplicationController
     end
     if authorized_action(@topic, @current_user, :read)
       @headers = !params[:headless]
-      @all_entries = @topic.discussion_entries.active
-      @grouped_entries = @all_entries.group_by(&:parent_id)
-      @entries = @all_entries.select{|e| e.parent_id == parent_id}
       @locked = @topic.locked_for?(@current_user, :check_policies => true, :deep_check_if_needed => true)
-      @topic.context_module_action(@current_user, :read) if !@locked
+      unless @locked
+        @topic.change_read_state('read', @current_user)
+      end
       if @topic.for_group_assignment?
-        @groups = @topic.assignment.group_category.groups.active.select{|g| g.grants_right?(@current_user, session, :read) }
-        if params[:combined]
-          @topic_agglomerated = true
-          @topics = @topic.child_topics.select{|t| @groups.include?(t.context) }
-          @entries = @topics.map{|t| t.discussion_entries.active.find(:all, :conditions => ['parent_id = ?', 0])}.flatten.sort_by{|e| e.created_at}
-        else
-          @topics = @topic.child_topics.to_a
-          @topics = @topics.select{|t| @groups.include?(t.context) } unless @topic.grants_right?(@current_user, session, :update)
-          @group_entry = @topic.discussion_entries.build(:message => render_to_string(:partial => 'group_assignment_discussion_entry'))
-          @group_entry.new_record_header = t '#titles.group_discussion', "Group Discussion"
-          @topic_uneditable = true
-          @entries = [@group_entry]
+        @groups = @topic.assignment.group_category.groups.active.select{ |g| g.grants_right?(@current_user, session, :read) }
+        topics = @topic.child_topics.to_a
+        topics = topics.select{|t| @groups.include?(t.context) } unless @topic.grants_right?(@current_user, session, :update)
+        @group_topics = @groups.map do |group|
+          {:group => group, :topic => topics.find{|t| t.context == group} }
         end
       end
-      
-      if @topic.require_initial_post?
-        # check if the user, or the user being observed can see the posts
-        if @context_enrollment && @context_enrollment.respond_to?(:associated_user) && @context_enrollment.associated_user
-          @initial_post_required = true if !@topic.user_can_see_posts?(@context_enrollment.associated_user)
-        elsif !@topic.user_can_see_posts?(@current_user, session)
-          @initial_post_required = true
-        end
-        @entries = [] if @initial_post_required
-      end
+
+      @initial_post_required = @topic.initial_post_required?(@current_user, @context_enrollment, session)
 
       log_asset_access(@topic, 'topics', 'topics')
       respond_to do |format|
         if @topic.deleted?
           flash[:notice] = t :deleted_topic_notice, "That topic has been deleted"
           format.html { redirect_to named_context_url(@context, :discussion_topics_url) }
-        elsif @topics && @topics.length == 1 && !@topic.grants_right?(@current_user, session, :update)
-          format.html { redirect_to named_context_url(@topics[0].context, :context_discussion_topics_url, :root_discussion_topic_id => @topic.id) }
+        elsif topics && topics.length == 1 && !@topic.grants_right?(@current_user, session, :update)
+          format.html { redirect_to named_context_url(topics[0].context, :context_discussion_topics_url, :root_discussion_topic_id => @topic.id) }
         else
-          format.html { render :action => "show" }
-          format.json  { render :json => @entries.to_json(:methods => :user_name, :permissions => {:user => @current_user, :session => session}) }
+          format.html do
+
+            @context_module_tag = ContextModuleItem.find_tag_with_preferred([@topic, @topic.root_topic, @topic.assignment], params[:module_item_id])
+            @sequence_asset = @context_module_tag.try(:content)
+            env_hash = {
+              :TOPIC => {
+                :ID => @topic.id,
+              },
+              :PERMISSIONS => {
+                :CAN_REPLY => !(@topic.for_group_assignment? || @topic.locked?),
+                :CAN_ATTACH => @topic.grants_right?(@current_user, session, :attach),
+                :MODERATE => @context.grants_right?(@current_user, session, :moderate_forum)
+              },
+              :ROOT_URL => named_context_url(@context, :api_v1_context_discussion_topic_view_url, @topic),
+              :ENTRY_ROOT_URL => named_context_url(@context, :api_v1_context_discussion_topic_entry_list_url, @topic),
+              :REPLY_URL => named_context_url(@context, :api_v1_context_discussion_add_reply_url, @topic, ':entry_id'),
+              :ROOT_REPLY_URL => named_context_url(@context, :api_v1_context_discussion_add_entry_url, @topic),
+              :DELETE_URL => named_context_url(@context, :api_v1_context_discussion_delete_reply_url, @topic, ':id'),
+              :UPDATE_URL => named_context_url(@context, :api_v1_context_discussion_update_reply_url, @topic, ':id'),
+              :MARK_READ_URL => named_context_url(@context, :api_v1_context_discussion_topic_discussion_entry_mark_read_url, @topic, ':id'),
+              :CURRENT_USER => user_display_json(@current_user),
+              :INITIAL_POST_REQUIRED => @initial_post_required,
+              :THREADED => @topic.threaded?
+            }
+            if @topic.for_assignment? && @topic.assignment.grants_right?(@current_user, session, :grade)
+              env_hash[:SPEEDGRADER_URL_TEMPLATE] = named_context_url(@topic.assignment.context, :speed_grader_context_gradebook_url, :assignment_id => @topic.assignment.id, :anchor => {:student_id => ":student_id"}.to_json)
+            end
+            js_env :DISCUSSION => env_hash
+
+          end
         end
       end
     end
   end
-  
-  def permissions
-    if authorized_action(@context, @current_user, :read)
-      @topic = @context.discussion_topics.find(params[:discussion_topic_id])
-      @entries = @topic.discussion_entries.active
-      @entries.each{|e| e.discussion_topic = @topic }
-      render :json => @entries.to_json(:only => [:id], :permissions => {:user => @current_user, :session => session})
-    end
-  end
-  
-  def generate_assignment(assignment)
-    if assignment[:set_assignment] && assignment[:set_assignment] != '1'
-      params[:discussion_topic][:assignment] = nil
-      if @topic && @topic.assignment
-        @topic.update_attribute(:assignment_id, nil)
-        @topic.assignment.saved_by = :discussion_topic
-        @topic.assignment.destroy
-      end
-      return
-    end
-    @assignment = @topic.assignment if @topic
-    @assignment ||= @topic.restore_old_assignment if @topic
-    @assignment ||= @context.assignments.build
-    @assignment.submission_types = 'discussion_topic'
-    @context.assert_assignment_group
-    @assignment.assignment_group_id = assignment[:assignment_group_id] || @assignment.assignment_group_id || @context.assignment_groups.first.id
-    @assignment.title = params[:discussion_topic][:title]
-    @assignment.points_possible = assignment[:points_possible] || @assignment.points_possible
-    @assignment.due_at = assignment[:due_at] || @assignment.due_at
-    # if no due_at was given, set it to 11:59 pm in the creator's time zone
-    @assignment.infer_due_at
-    @assignment.saved_by = :discussion_topic
-    @assignment.save
-    params[:discussion_topic][:assignment] = @assignment
-  end
-  protected :generate_assignment
-  
+
+  # @API Create a new discussion topic
+  #
+  # Create an new discussion topic for the course or group.
+  #
+  # @argument title
+  # @argument message
+  # @argument discussion_type
+  #
+  # @argument delayed_post_at If a timestamp is given, the topic will not be published until that time.
+  #
+  # @argument podcast_enabled If true, the topic will have an associated podcast feed.
+  # @argument podcast_has_student_posts If true, the podcast will include posts from students as well. Implies podcast_enabled.
+  #
+  # @argument require_initial_post If true then a user may not respond to other replies until that user has made an initial reply. Defaults to false.
+  #
+  # @argument assignment To create an assignment discussion, pass the assignment parameters as a sub-object. See the {api:AssignmentsApiController#create Create an Assignment API} for the available parameters. The name parameter will be ignored, as it's taken from the discussion title. If you want to make a discussion that was an assignment NOT an assignment, pass set_assignment = false as part of the assignment object
+  #
+  # @argument is_announcement If true, this topic is an announcement. It will appear in the announcements section rather than the discussions section. This requires announcment-posting permissions.
+  #
+  # @argument position_after By default, discusions are sorted chronologically by creation date, you can pass the id of another topic to have this one show up after the other when they are listed.
+  # @example_request
+  #     curl https://<canvas>/api/v1/courses/<course_id>/discussion_topics \ 
+  #         -F title='my topic' \ 
+  #         -F message='initial message' \ 
+  #         -F podcast_enabled=1 \ 
+  #         -H 'Authorization: Bearer <token>'
+  #
+  # @example_request
+  #     curl https://<canvas>/api/v1/courses/<course_id>/discussion_topics \ 
+  #         -F title='my assignment topic' \ 
+  #         -F message='initial message' \ 
+  #         -F assignment[points_possible]=15 \ 
+  #         -H 'Authorization: Bearer <token>'
+  #
   def create
-    params[:discussion_topic].delete(:remove_attachment)
-
-    delay_posting = params[:discussion_topic].delete(:delay_posting)
-    assignment = params[:discussion_topic].delete(:assignment)
-    generate_assignment(assignment) if assignment && assignment[:set_assignment]
-
-    unless @context.grants_right?(@current_user, session, :moderate_forum)
-      params[:discussion_topic].delete :podcast_enabled
-      params[:discussion_topic].delete :podcast_has_student_posts
-    end
-    if params[:discussion_topic].delete(:is_announcement) == "1" && @context.announcements.new.grants_right?(@current_user, session, :create)
-      @topic = @context.announcements.build(params[:discussion_topic])
-    else
-      @topic = @context.discussion_topics.build(params[:discussion_topic])
-    end
-    @topic.workflow_state = 'post_delayed' if delay_posting == '1' && @topic.delayed_post_at && @topic.delayed_post_at > Time.now
-    @topic.delayed_post_at = "" unless @topic.post_delayed?
-    @topic.user = @current_user
-
-    if authorized_action(@topic, @current_user, :create)
-      return if params[:attachment] && params[:attachment][:uploaded_data] &&
-        params[:attachment][:uploaded_data].size > 1.kilobytes && 
-        @topic.grants_right?(@current_user, session, :attach) &&
-        quota_exceeded(named_context_url(@context, :context_discussion_topics_url))
-      respond_to do |format|
-        @topic.content_being_saved_by(@current_user)
-        if @topic.save
-          @topic.insert_at_bottom
-          log_asset_access(@topic, 'topics', 'topics', 'participate')
-          if params[:attachment] && params[:attachment][:uploaded_data] && params[:attachment][:uploaded_data].size > 0 && @topic.grants_right?(@current_user, session, :attach)
-            @attachment = @context.attachments.create(params[:attachment])
-            @topic.attachment = @attachment
-            @topic.save
-          end
-          flash[:notice] = t :topic_created_notice, 'Topic was successfully created.'
-          format.html { redirect_to named_context_url(@context, :context_discussion_topic_url, @topic) }
-          format.json  { render :json => @topic.to_json(:include => [:assignment,:attachment], :methods => :user_name, :permissions => {:user => @current_user, :session => session}), :status => :created }
-          format.text  { render :json => @topic.to_json(:include => [:assignment,:attachment], :methods => :user_name, :permissions => {:user => @current_user, :session => session}), :status => :created }
-        else
-          format.html { render :action => "new" }
-          format.json { render :json => @topic.errors.to_json, :status => :bad_request }
-          format.text { render :json => @topic.errors.to_json, :status => :bad_request }
-        end
-      end
-    end
+    process_discussion_topic(!!:is_new)
   end
 
+  # @API Update a topic, accepts the same parameters as create
+  # @example_request
+  #     curl https://<canvas>/api/v1/courses/<course_id>/discussion_topics/<topic_id> \ 
+  #         -F title='This will be positioned after Topic #1234' \ 
+  #         -F position_after=1234 \ 
+  #         -H 'Authorization: Bearer <token>'
+  #
   def update
-    params[:discussion_topic].delete(:is_announcement)
-
-    remove_attachment = (params[:discussion_topic] || {}).delete :remove_attachment
-    @topic = @context.all_discussion_topics.find(params[:id])
-    @topic.attachment_id = nil if remove_attachment == '1'
-
-    if authorized_action(@topic, @current_user, :update)
-      assignment = params[:discussion_topic].delete(:assignment)
-      generate_assignment(assignment) if assignment && assignment[:set_assignment]
-      if params[:discussion_topic][:lock]
-        @topic.workflow_state = (params[:discussion_topic][:lock] == '1') ? 'locked' : 'active'
-        params[:discussion_topic].delete :lock
-      end
-      unless @context.grants_right?(@current_user, session, :moderate_forum)
-        params[:discussion_topic].delete :podcast_enabled
-        params[:discussion_topic].delete :podcast_has_student_posts
-        params[:discussion_topic].delete :event
-      end
-      delay_posting = params[:discussion_topic].delete :delay_posting
-      delayed_post_at = params[:discussion_topic].delete :delayed_post_at
-      delayed_post_at = Time.zone.parse(delayed_post_at) if delayed_post_at
-      @topic.workflow_state = (delay_posting == '1' && delayed_post_at > Time.now ? 'post_delayed' : @topic.workflow_state)
-      @topic.workflow_state = 'active' if @topic.post_delayed? && (!delayed_post_at || delay_posting != '1')
-      @topic.delayed_post_at = @topic.post_delayed? ? delayed_post_at : nil
-
-      return if params[:attachment] && params[:attachment][:uploaded_data] &&
-            params[:attachment][:uploaded_data].size > 1.kilobytes && 
-            @topic.grants_right?(@current_user, session, :attach) &&
-            quota_exceeded(named_context_url(@context, :context_discussion_topics_url))
-      @topic.process_event(params[:discussion_topic].delete(:event)) if params[:discussion_topic][:event]
-      respond_to do |format|
-        @topic.content_being_saved_by(@current_user)
-        @topic.editor = @current_user
-        if @topic.update_attributes(params[:discussion_topic])
-          @topic.context_module_action(@current_user, :contributed) if !@locked
-          if params[:attachment] && params[:attachment][:uploaded_data] && params[:attachment][:uploaded_data].size > 0 && @topic.grants_right?(@current_user, session, :attach)
-            @attachment = @context.attachments.create(params[:attachment])
-            @topic.attachment = @attachment
-            @topic.save
-          end
-          flash[:notice] = t :topic_updated_notice, 'Topic was successfully updated.'
-          format.html { redirect_to named_context_url(@context, :context_discussion_topic_url, @topic) }
-          format.json  { render :json => @topic.to_json(:include => [:assignment, :attachment], :methods => :user_name, :permissions => {:user => @current_user, :session => session}), :status => :ok }
-          format.text  { render :json => @topic.to_json(:include => [:assignment, :attachment], :methods => :user_name, :permissions => {:user => @current_user, :session => session}), :status => :ok }
-        else
-          format.html { render :action => "edit" }
-          format.json { render :json => @topic.errors.to_json, :status => :bad_request }
-          format.text { render :json => @topic.errors.to_json, :status => :bad_request }
-        end
-      end
-    end
+    process_discussion_topic(!:is_new)
   end
 
+  # @API Delete a topic
+  #
+  # Deletes the discussion topic. This will also delete the assignment, if it's
+  # an assignment discussion.
+  #
+  # @example_request
+  #     curl -X DELETE https://<canvas>/api/v1/courses/<course_id>/discussion_topics/<topic_id> \ 
+  #          -H 'Authorization: Bearer <token>'
   def destroy
-    @topic = @context.all_discussion_topics.find(params[:id])
+    @topic = @context.all_discussion_topics.find(params[:id] || params[:topic_id])
     if authorized_action(@topic, @current_user, :delete)
       @topic.destroy
       respond_to do |format|
-        format.html { redirect_to named_context_url(@context, :context_discussion_topics_url) }
+        format.html {
+          flash[:notice] = t :topic_deleted_notice, "%{topic_title} deleted successfully", :topic_title => @topic.title
+          redirect_to named_context_url(@context, :context_discussion_topics_url)
+        }
         format.json  { render :json => @topic.to_json(:include => {:user => {:only => :name} } ), :status => :ok }
       end
     end
   end
-  
+
   def public_feed
     return unless get_feed_context
     feed = Atom::Feed.new do |f|
       f.title = t :discussion_feed_title, "%{title} Discussion Feed", :title => @context.name
-      f.links << Atom::Link.new(:href => named_context_url(@context, :context_discussion_topics_url))
+      f.links << Atom::Link.new(:href => polymorphic_url([@context, :discussion_topics]), :rel => 'self')
       f.updated = Time.now
-      f.id = named_context_url(@context, :context_discussion_topics_url)
+      f.id = polymorphic_url([@context, :discussion_topics])
     end
     @entries = []
     @entries.concat @context.discussion_topics.reject{|a| a.locked_for?(@current_user, :check_policies => true) }
@@ -340,9 +331,131 @@ class DiscussionTopicsController < ApplicationController
     end
     respond_to do |format|
       format.atom { render :text => feed.to_xml }
-    end    
+    end
   end
-  
+
   def public_topic_feed
   end
+
+  protected
+
+  def add_discussion_or_announcement_crumb
+    if  @topic.is_a? Announcement
+      @active_tab = "announcements"
+      add_crumb t('#crumbs.announcements', "Announcements"), named_context_url(@context, :context_announcements_url)
+    else
+      @active_tab = "discussions"
+      add_crumb t('#crumbs.discussions', "Discussions"), named_context_url(@context, :context_discussion_topics_url)
+    end
+  end
+
+  API_ALLOWED_TOPIC_FIELDS = %w(title message discussion_type delayed_post_at podcast_enabled
+                                podcast_has_student_posts require_initial_post is_announcement)
+  def process_discussion_topic(is_new = false)
+    discussion_topic_hash = params.slice(*API_ALLOWED_TOPIC_FIELDS)
+    model_type = value_to_boolean(discussion_topic_hash.delete(:is_announcement)) && @context.announcements.new.grants_right?(@current_user, session, :create) ? :announcements : :discussion_topics
+    if is_new
+      @topic = @context.send(model_type).build
+    else
+      @topic = @context.send(model_type).active.find(params[:id] || params[:topic_id])
+    end
+
+    if authorized_action(@topic, @current_user, (is_new ? :create : :update))
+
+      discussion_topic_hash[:podcast_enabled] = true if value_to_boolean(discussion_topic_hash[:podcast_has_student_posts])
+
+      unless @context.grants_right?(@current_user, session, :moderate_forum)
+        discussion_topic_hash.delete :podcast_enabled
+        discussion_topic_hash.delete :podcast_has_student_posts
+      end
+
+      @topic.send(is_new ? :user= : :editor=, @current_user)
+      @topic.current_user = @current_user
+      @topic.content_being_saved_by(@current_user)
+
+      # handle delayed posting
+      if discussion_topic_hash.has_key? :delayed_post_at
+        @topic.delayed_post_at = discussion_topic_hash[:delayed_post_at]
+        @topic.delayed_post_at = "" if @topic.delayed_post_at && @topic.delayed_post_at < Time.now
+        @topic.workflow_state = 'post_delayed' if @topic.delayed_post_at
+        @topic.workflow_state = 'active' if @topic.post_delayed? && !@topic.delayed_post_at
+      end
+
+      #handle locking/unlocking
+      if params.has_key? :locked
+        if value_to_boolean(params[:locked])
+          @topic.lock
+        else
+          @topic.unlock
+        end
+      end
+
+      if @topic.update_attributes(discussion_topic_hash)
+        log_asset_access(@topic, 'topics', 'topics', 'participate')
+
+        # handle sort positioning
+        if params[:position_after] && @context.grants_right?(@current_user, session, :moderate_forum)
+          other_topic = @context.discussion_topics.active.find(params[:position_after])
+          @topic.insert_at(other_topic.position)
+        end
+
+        # handle creating/removing attachment
+        if @topic.grants_right?(@current_user, session, :attach)
+          attachment = params[:attachment] &&
+                       params[:attachment].size > 0 &&
+                       params[:attachment]
+
+          return if attachment && attachment.size > 1.kilobytes &&
+                    quota_exceeded(named_context_url(@context, :context_discussion_topics_url))
+
+          if (params.has_key?(:remove_attachment) || attachment) && @topic.attachment
+            @topic.attachment.destroy!
+          end
+
+          if attachment
+            @attachment = @context.attachments.create!(:uploaded_data => attachment)
+            @topic.attachment = @attachment
+            @topic.save
+          end
+        end
+
+        # handle creating/deleting assignment
+        if params[:assignment]
+          if params[:assignment].has_key?(:set_assignment) && !value_to_boolean(params[:assignment][:set_assignment])
+            if @topic.assignment && @topic.assignment.grants_right?(@current_user, session, :update)
+              assignment = @topic.assignment
+              @topic.assignment = nil
+              @topic.save!
+              assignment.destroy
+            end
+          
+          elsif (@assignment = @topic.assignment || @topic.restore_old_assignment || (@topic.assignment = @context.assignments.build)) &&
+                 @assignment.grants_right?(@current_user, session, :update)
+            update_api_assignment(@assignment, params[:assignment].merge(@topic.attributes.slice('title')))
+            @assignment.submission_types = 'discussion_topic'
+            @assignment.saved_by = :discussion_topic
+            @topic.assignment = @assignment
+            @topic.save!
+          end
+        end
+
+        render :json => discussion_topic_api_json(@topic, @context, @current_user, session)
+      else
+        render :json => @topic.errors.to_json, :status => :bad_request
+      end
+    end
+  end
+
+  def child_topic
+    extra_params = {:headless => 1} if params[:headless]
+    @root_topic = @context.context.discussion_topics.find(params[:root_discussion_topic_id])
+    @topic = @context.discussion_topics.find_or_initialize_by_root_topic_id(params[:root_discussion_topic_id])
+    @topic.message = @root_topic.message
+    @topic.title = @root_topic.title
+    @topic.assignment_id = @root_topic.assignment_id
+    @topic.user_id = @root_topic.user_id
+    @topic.save
+    redirect_to named_context_url(@context, :context_discussion_topic_url, @topic.id, extra_params)
+  end
+
 end

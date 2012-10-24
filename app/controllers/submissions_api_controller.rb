@@ -27,10 +27,11 @@
 # "sis_section_id:" as described in the API documentation on SIS IDs.
 class SubmissionsApiController < ApplicationController
   before_filter :get_course_from_section, :require_context
+  batch_jobs_in_actions :only => :update, :batch => { :priority => Delayed::LOW_PRIORITY }
 
   include Api::V1::Submission
 
-  # @API
+  # @API List assignment submissions
   #
   # Get all existing submissions for an assignment.
   #
@@ -62,7 +63,7 @@ class SubmissionsApiController < ApplicationController
     end
   end
 
-  # @API
+  # @API List submissions for multiple assignments
   #
   # Get all existing submissions for a given set of students and assignments.
   #
@@ -72,26 +73,25 @@ class SubmissionsApiController < ApplicationController
   # @argument include[] ["submission_history"|"submission_comments"|"rubric_assessment"|"assignment"|"total_scores"] Associations to include with the group. `total_scores` requires the `grouped` argument.
   #
   # @example_response
+  #     # Without grouped:
   #
-  # Without grouped:
+  #     [
+  #       { "assignment_id": 100, grade: 5, "user_id": 1, ... },
+  #       { "assignment_id": 101, grade: 6, "user_id": 2, ... }
   #
-  # [
-  #   { "assignment_id": 100, grade: 5, "user_id": 1, ... },
-  #   { "assignment_id": 101, grade: 6, "user_id": 2, ... }
+  #     # With grouped:
   #
-  # With grouped:
-  #
-  # [
-  #   {
-  #     "user_id": 1,
-  #     "submissions: [
-  #       { "assignment_id": 100, grade: 5, ... },
-  #       { "assignment_id": 101, grade: 6, ... }
+  #     [
+  #       {
+  #         "user_id": 1,
+  #         "submissions": [
+  #           { "assignment_id": 100, grade: 5, ... },
+  #           { "assignment_id": 101, grade: 6, ... }
+  #         ]
+  #       }
   #     ]
-  #   }
-  # ]
   def for_students
-    if authorized_action(@context, @current_user, :manage_grades)
+    if authorized_action(@context, @current_user, [:manage_grades, :view_all_grades])
       raise ActiveRecord::RecordNotFound if params[:student_ids].blank?
       student_ids = map_user_ids(params[:student_ids]).map(&:to_i) & visible_user_ids
       return render(:json => []) if student_ids.blank?
@@ -140,7 +140,7 @@ class SubmissionsApiController < ApplicationController
     end
   end
 
-  # @API
+  # @API Get a single submission
   #
   # Get a single submission, based on user id.
   #
@@ -156,7 +156,33 @@ class SubmissionsApiController < ApplicationController
     end
   end
 
-  # @API
+  # @API Upload a file
+  #
+  # Upload a file to a submission.
+  #
+  # This API endpoint is the first step in uploading a file to a submission as a student.
+  # See the {file:file_uploads.html File Upload Documentation} for details on the file upload workflow.
+  #
+  # The final step of the file upload workflow will return the attachment data,
+  # including the new file id. The caller can then POST to submit the
+  # +online_upload+ assignment with these file ids.
+  #
+  def create_file
+    @assignment = @context.assignments.active.find(params[:assignment_id])
+    @user = get_user_considering_section(params[:user_id])
+    permission = @assignment.submission_types.include?("online_upload") ? :submit : :nothing
+    # rationale for allowing other user ids at all: eventually, you'll be able
+    # to use this api for uploading an attachment to a submission comment.
+    # teachers will be able to do that for any submission they can grade, so
+    # they need to be able to specify the target user.
+    permission = :nothing if @user != @current_user
+    # we don't check quota when uploading a file for assignment submission
+    if authorized_action(@assignment, @current_user, permission)
+      api_attachment_preflight(@user, request, :check_quota => false, :do_submit_to_scribd => true)
+    end
+  end
+
+  # @API Grade or comment on a submission
   #
   # Comment on and/or update the grading for a student's assignment submission.
   # If any submission or rubric_assessment arguments are provided, the user
@@ -164,6 +190,15 @@ class SubmissionsApiController < ApplicationController
   # section).
   #
   # @argument comment[text_comment] Add a textual comment to the submission.
+  #
+  # @argument comment[group_comment] [Boolean] Whether or not this comment should be sent to the entire group (defaults to false). Ignored if this is not a group assignment or if no text_comment is provided.
+  #
+  # @argument comment[media_comment_id] Add an audio/video comment to the submission.
+  #   Media comments can be added via this API, however, note that there
+  #   is not yet an API to generate or list existing media comments, so this
+  #   functionality is currently of limited use.
+  #
+  # @argument comment[media_comment_type] ["audio"|"video"] The type of media comment being added.
   #
   # @argument submission[posted_grade] Assign a score to the submission,
   #   updating both the "score" and "grade" fields on the submission record.
@@ -186,6 +221,7 @@ class SubmissionsApiController < ApplicationController
   #   rubric_assessment[criterion_id][comments]:: Comments to add for this row.
   #
   #   For example, if the assignment rubric is (in JSON format):
+  #     !!!javascript
   #     [
   #       {
   #         'id': 'crit1',
@@ -210,8 +246,7 @@ class SubmissionsApiController < ApplicationController
   #     ]
   #
   #   Then a possible set of values for rubric_assessment would be:
-  #
-  #   rubric_assessment[crit1][points]=3&rubric_assessment[crit2][points]=5&rubric_assessment[crit2][comments]=Well%20Done.
+  #       rubric_assessment[crit1][points]=3&rubric_assessment[crit2][points]=5&rubric_assessment[crit2][comments]=Well%20Done.
   def update
     @assignment = @context.assignments.active.find(params[:assignment_id])
     @user = get_user_considering_section(params[:id])
@@ -225,14 +260,16 @@ class SubmissionsApiController < ApplicationController
     end
 
     if authorized
-      submission = {}
+      submission = { :grader => @current_user }
       if params[:submission].is_a?(Hash)
         submission[:grade] = params[:submission].delete(:posted_grade)
       end
       if submission[:grade]
-        @submission = @assignment.grade_student(@user, submission).first
+        @submissions = @assignment.grade_student(@user, submission)
+        @submission = @submissions.first
       else
         @submission ||= @assignment.find_or_create_submission(@user)
+        @submissions ||= [@submission]
       end
 
       assessment = params[:rubric_assessment]
@@ -251,32 +288,23 @@ class SubmissionsApiController < ApplicationController
       if comment.is_a?(Hash)
         comment = {
           :comment => comment[:text_comment], :author => @current_user }.merge(
-          # Undocumented API feature: adding media comments given the kaltura
-          # media id. Eventually we'll expose a public API for media comments,
-          # but we need to implement a way to abstract it away from kaltura and
-          # make it generic. This will probably involve a proxy outside of
-          # rails.
-          comment.slice(:media_comment_id, :media_comment_type))
-          @submission.add_comment(comment)
+          comment.slice(:media_comment_id, :media_comment_type, :group_comment)
+        ).with_indifferent_access
+        @assignment.update_submission(@submission.user, comment)
       end
       # We need to reload because some of this stuff is getting set on the
       # submission without going through the model instance -- it'd be nice to
       # fix this at some point.
       @submission.reload
 
-      render :json => submission_json(@submission, @assignment, @current_user, session, @context, %w(submission_comments)).to_json
+      json = submission_json(@submission, @assignment, @current_user, session, @context, %w(submission_comments))
+      json[:all_submissions] = @submissions.map { |submission| submission_json(submission, @assignment, @current_user, session, @context) }
+      render :json => json.to_json
     end
   end
 
   def map_user_ids(user_ids)
     Api.map_ids(user_ids, User, @domain_root_account)
-  end
-
-  def get_course_from_section
-    if params[:section_id]
-      @section = api_find(CourseSection, params.delete(:section_id))
-      params[:course_id] = @section.course_id
-    end
   end
 
   def get_user_considering_section(user_id)
@@ -289,7 +317,7 @@ class SubmissionsApiController < ApplicationController
 
   def visible_user_ids
     scope = if @section
-      @context.enrollments_visible_to(@current_user, false, false, [@section.id])
+      @context.enrollments_visible_to(@current_user, :section_ids => [@section.id])
     else
       @context.enrollments_visible_to(@current_user)
     end

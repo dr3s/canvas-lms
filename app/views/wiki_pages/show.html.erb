@@ -1,14 +1,10 @@
 <% 
-  jammit_js :wiki 
-  js_block { %><%= javascript_include_tag "tinymce/jscripts/tiny_mce/tiny_mce.js" %><% }
+  js_bundle :wiki
+  jammit_css :tinymce
   content_for :page_title, join_title(@page.title.to_s, @context.name)
   content_for :right_side, render(:partial => 'wiki_pages/wiki_right_side')
 %>
 
-<% if @page && @page.context_module_tag_for(@context, @current_user) && @page.context_module_tag_for(@context, @current_user).context_module %>
-  <%= render :partial => "shared/context_module_legend", :object => @page.context_module_tag_for(@context, @current_user).context_module %>
-  <div class="clear"></div>
-<% end %>
 <% if reason = @page.locked_for?(@context, @current_user) %>
   <h2><%= @page.title %></h2>
   <%= lock_explanation(reason, 'page', @context) %>
@@ -16,4 +12,4 @@
   <%= render :partial => "wiki_pages/content" %>
 <% end %>
 
-<%= render :partial => "shared/sequence_footer", :locals => {:asset => @page} if @page.context_module_tag_for(@context, @current_user) %>
+<%= render :partial => "shared/sequence_footer", :locals => {:asset => @page} if @page.context_module_tag_for(@context) %>

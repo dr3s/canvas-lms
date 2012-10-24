@@ -1,6 +1,4 @@
-require File.expand_path("../spec_helper", __FILE__)
-
-describe Delayed::PerformableMethod do
+shared_examples_for 'Delayed::PerformableMethod' do
   
   it "should not ignore ActiveRecord::RecordNotFound errors because they are not always permanent" do
     story = Story.create :text => 'Once upon...'
@@ -43,5 +41,12 @@ describe Delayed::PerformableMethod do
     p.method.should  == :read
     p.args.should    == [story]
     p.perform.should == 'Epilog: Once upon...'
+  end
+
+  it "should deeply de-AR-ize arguments in full name" do
+    story = Story.create :text => 'Once upon...'
+    reader = StoryReader.new
+    p = Delayed::PerformableMethod.new(reader, :read, [['arg1', story, { [:key, 1] => story }]])
+    p.full_name.should == "StoryReader#read([\"arg1\", Story.find(#{story.id}), {[:key, 1] => Story.find(#{story.id})}])"
   end
 end

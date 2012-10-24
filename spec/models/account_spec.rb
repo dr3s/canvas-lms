@@ -16,7 +16,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
+require File.expand_path(File.dirname(__FILE__) + '/../sharding_spec_helper.rb')
 
 describe Account do
 
@@ -255,6 +255,45 @@ describe Account do
       @a.disable_service('google_docs')
       @a.allowed_services.should == '-google_docs_previews,-google_docs'
     end
+
+    describe "services_exposed_to_ui_hash" do
+      it "should return all ui services by default" do
+        Account.services_exposed_to_ui_hash.keys.should == Account.allowable_services.reject { |h,k| !k[:expose_to_ui] }.keys
+      end
+
+      it "should return services of a type if specified" do
+        Account.services_exposed_to_ui_hash(:setting).keys.should == Account.allowable_services.reject { |h,k| k[:expose_to_ui] != :setting }.keys
+      end
+    end
+
+    describe "plugin services" do
+      before do
+        Account.register_service(:myplugin, { :name => "My Plugin", :description => "", :expose_to_ui => :setting, :default => false })
+      end
+
+      it "should return the service" do
+        Account.allowable_services.keys.should be_include(:myplugin)
+      end
+
+      it "should allow setting the service" do
+        @a.service_enabled?(:myplugin).should be_false
+
+        @a.enable_service(:myplugin)
+        @a.service_enabled?(:myplugin).should be_true
+        @a.allowed_services.should match(/\+myplugin/)
+
+        @a.disable_service(:myplugin)
+        @a.service_enabled?(:myplugin).should be_false
+        @a.allowed_services.should be_blank
+      end
+
+      describe "services_exposed_to_ui_hash" do
+        it "should return services defined in a plugin" do
+          Account.services_exposed_to_ui_hash().keys.should be_include(:myplugin)
+          Account.services_exposed_to_ui_hash(:setting).keys.should be_include(:myplugin)
+        end
+      end
+    end
   end
   
   context "settings=" do
@@ -307,18 +346,6 @@ describe Account do
     a2.enrollment_terms.size.should == 0
   end
 
-  context "page view reports" do
-    before(:each) do
-      @a = Account.create!(:name => 'nada')
-    end
-    it "should build hourly reports" do
-      lambda{@a.page_views_by_hour}.should_not raise_error
-    end
-    it "should build daily reports" do
-      lambda{@a.page_views_by_day}.should_not raise_error
-    end
-  end
-
   def account_with_admin_and_restricted_user(account)
     account.add_account_membership_type('Restricted Admin')
     admin = User.create
@@ -330,6 +357,12 @@ describe Account do
 
 
   it "should set up access policy correctly" do
+    # stub out any "if" permission conditions
+    RoleOverride.permissions.each do |k, v|
+      next unless v[:if]
+      Account.any_instance.stubs(v[:if]).returns(true)
+    end
+
     # Set up a hierarchy of 4 accounts - a root account, a sub account,
     # a sub sub account, and SiteAdmin account.  Create a 'Restricted Admin'
     # role in each one, and create an admin user and a user in the restricted
@@ -353,6 +386,8 @@ describe Account do
 
     limited_access = [ :read, :manage, :update, :delete ]
     full_access = RoleOverride.permissions.map { |k, v| k } + limited_access
+    index = full_access.index(:manage_courses)
+    full_access = full_access[0..index] + [:create_courses] + full_access[index+1..-1]
     # site admin has access to everything everywhere
     hash.each do |k, v|
       account = v[:account]
@@ -547,6 +582,24 @@ describe Account do
   end
 
   context "tabs_available" do
+    it "should include 'Developer Keys' for the authorized users of the site_admin account" do
+      account_admin_user(:account => Account.site_admin)
+      tabs = Account.site_admin.tabs_available(@admin)
+      tabs.map{|t| t[:id] }.should be_include(Account::TAB_DEVELOPER_KEYS)
+
+      tabs = Account.site_admin.tabs_available(nil)
+      tabs.map{|t| t[:id] }.should_not be_include(Account::TAB_DEVELOPER_KEYS)
+    end
+    
+    it "should not include 'Developer Keys' for non-site_admin accounts" do
+      @account = Account.default.sub_accounts.create!(:name => "sub-account")
+      tabs = @account.tabs_available(nil)
+      tabs.map{|t| t[:id] }.should_not be_include(Account::TAB_DEVELOPER_KEYS)
+      
+      tabs = @account.root_account.tabs_available(nil)
+      tabs.map{|t| t[:id] }.should_not be_include(Account::TAB_DEVELOPER_KEYS)
+    end
+    
     it "should not include external tools if not configured for course navigation" do
       @account = Account.default.sub_accounts.create!(:name => "sub-account")
       tool = @account.context_external_tools.new(:name => "bob", :consumer_key => "bob", :shared_secret => "bob", :domain => "example.com")
@@ -557,18 +610,36 @@ describe Account do
       tabs.map{|t| t[:id] }.should_not be_include(tool.asset_string)
     end
     
-    it "should include external tools if configured on the account" do
+    it "should include active external tools if configured on the account" do
       @account = Account.default.sub_accounts.create!(:name => "sub-account")
-      tool = @account.context_external_tools.new(:name => "bob", :consumer_key => "bob", :shared_secret => "bob", :domain => "example.com")
-      tool.settings[:account_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
-      tool.save!
-      tool.has_account_navigation.should == true
-      tabs = @account.tabs_available(nil)
-      tabs.map{|t| t[:id] }.should be_include(tool.asset_string)
-      tab = tabs.detect{|t| t[:id] == tool.asset_string }
-      tab[:label].should == tool.settings[:account_navigation][:text]
+      tools = []
+      2.times do |n|
+        t = @account.context_external_tools.new(
+          :name => "bob",
+          :consumer_key => "bob",
+          :shared_secret => "bob",
+          :domain => "example.com"
+        )
+        t.account_navigation = {
+          :text => "Example URL",
+          :url  =>  "http://www.example.com",
+        }
+        t.save!
+        tools << t
+      end
+      tool1, tool2 = tools
+      tool2.destroy
+
+      tools.each { |t| t.has_account_navigation.should == true }
+
+      tabs = @account.tabs_available
+      tab_ids = tabs.map{|t| t[:id] }
+      tab_ids.should be_include(tool1.asset_string)
+      tab_ids.should_not be_include(tool2.asset_string)
+      tab = tabs.detect{|t| t[:id] == tool1.asset_string }
+      tab[:label].should == tool1.settings[:account_navigation][:text]
       tab[:href].should == :account_external_tool_path
-      tab[:args].should == [@account.id, tool.id]
+      tab[:args].should == [@account.id, tool1.id]
     end
     
     it "should include external tools if configured on the root account" do
@@ -603,21 +674,21 @@ describe Account do
     @account.save.should be_false
   end
 
-  describe "open_registration_for?" do
-    it "should be true for anyone if open registration is turned on" do
+  describe "user_list_search_mode_for" do
+    it "should be preferred for anyone if open registration is turned on" do
       account = Account.default
       account.settings = { :open_registration => true }
-      account.open_registration_for?(nil).should be_true
-      account.open_registration_for?(user).should be_true
+      account.user_list_search_mode_for(nil).should == :preferred
+      account.user_list_search_mode_for(user).should == :preferred
     end
 
-    it "should be true for account admins" do
+    it "should be preferred for account admins" do
       account = Account.default
-      account.open_registration_for?(nil).should be_false
-      account.open_registration_for?(user).should be_false
+      account.user_list_search_mode_for(nil).should == :closed
+      account.user_list_search_mode_for(user).should == :closed
       user
       account.add_user(@user)
-      account.open_registration_for?(@user).should be_true
+      account.user_list_search_mode_for(@user).should == :preferred
     end
   end
 
@@ -633,14 +704,74 @@ describe Account do
         account.settings[:global_javascript].should == 'bob'
       end
     end
+  end
 
-    describe "open_registration" do
-      it "should not allow it to be turned on if delegated auth is enabled" do
-        account = Account.default
-        account.account_authorization_configs.create!(:auth_type => 'cas')
-        account.settings = { :open_registration => true }
-        account.open_registration?.should be_false
+  context "sharding" do
+    it_should_behave_like "sharding"
+
+    it "should properly return site admin permissions regardless of active shard" do
+      user
+      site_admin = Account.site_admin
+      site_admin.add_user(@user)
+
+      @shard1.activate do
+        site_admin.grants_right?(@user, nil, :manage_site_settings).should be_true
       end
+      site_admin.grants_right?(@user, nil, :manage_site_settings).should be_true
+    end
+  end
+
+  context "permissions" do
+    it "should grant :read_sis to teachers" do
+      user_with_pseudonym(:active_all => 1)
+      Account.default.grants_right?(@user, :read_sis).should be_false
+      @course = Account.default.courses.create!
+      @course.enroll_teacher(@user).accept!
+      Account.default.grants_right?(@user, :read_sis).should be_true
+    end
+  end
+
+  describe "canvas_authentication?" do
+    it "should be true if there's not an AAC" do
+      Account.default.settings[:canvas_authentication] = false
+      Account.default.canvas_authentication?.should be_true
+      Account.default.account_authorization_configs.create!(:auth_type => 'ldap')
+      Account.default.canvas_authentication?.should be_false
+    end
+  end
+
+  context "manually created courses account" do
+    it "should still work with existing manually created courses accounts" do
+      acct = Account.default
+      sub = acct.sub_accounts.create!(:name => "Manually-Created Courses")
+      manual_courses_account = acct.manually_created_courses_account
+      manual_courses_account.id.should == sub.id
+      acct.reload.settings[:manually_created_courses_account_id].should == sub.id
+    end
+
+    it "should not create a duplicate manual courses account when locale changes" do
+      acct = Account.default
+      sub1 = acct.manually_created_courses_account
+      I18n.locale = "es"
+      sub2 = acct.manually_created_courses_account
+      I18n.locale = "en"
+      sub1.id.should == sub2.id
+    end
+
+    it "should work if the saved account id doesn't exist" do
+      acct = Account.default
+      acct.settings[:manually_created_courses_account_id] = acct.id + 1000
+      acct.save!
+      acct.manually_created_courses_account.should be_present
+    end
+
+    it "should work if the saved account id is not a sub-account" do
+      acct = Account.default
+      bad_acct = Account.create!
+      acct.settings[:manually_created_courses_account_id] = bad_acct.id
+      acct.save!
+      manual_course_account = acct.manually_created_courses_account
+      manual_course_account.id.should_not == bad_acct.id
     end
   end
 end

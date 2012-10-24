@@ -18,17 +18,21 @@
 
 module Api::V1::Assignment
   include Api::V1::Json
-  include Api::V1::DiscussionTopics
+  include ApplicationHelper
 
-  def assignment_json(assignment, user, session, includes = [], show_admin_fields = false)
-    # no includes supported right now
-    hash = api_json(assignment, user, session, :only => %w(id grading_type points_possible position due_at description))
+  def assignment_json(assignment, user, session, include_discussion_topic = true)
+    hash = api_json(assignment, user, session, :only => %w(id grading_type points_possible position due_at description assignment_group_id group_category_id))
 
     hash['course_id'] = assignment.context_id
     hash['name'] = assignment.title
     hash['description'] = api_user_content(hash['description'], @context || assignment.context)
+    hash['html_url'] = course_assignment_url(assignment.context_id, assignment)
 
-    if show_admin_fields
+    if hash['lock_info']
+      hash['lock_explanation'] = lock_explanation(hash['lock_info'], 'assignment', assignment.context)
+    end
+
+    if assignment.grants_right?(user, :grade)
       hash['needs_grading_count'] = assignment.needs_grading_count
     end
 
@@ -40,6 +44,10 @@ module Api::V1::Assignment
 
     hash['muted'] = assignment.muted?
 
+    if assignment.allowed_extensions.present?
+      hash['allowed_extensions'] = assignment.allowed_extensions
+    end
+
     if assignment.rubric_association
       hash['use_rubric_for_grading'] =
         !!assignment.rubric_association.use_for_grading
@@ -49,16 +57,46 @@ module Api::V1::Assignment
       end
     end
 
-    hash['rubric'] = assignment.rubric.data.map do |row|
-      row_hash = row.slice(:id, :points, :description, :long_description)
-      row_hash["ratings"] = row[:ratings].map { |c| c.slice(:id, :points, :description) }
-      row_hash
-    end if assignment.rubric
+    if assignment.rubric
+      rubric = assignment.rubric
+      hash['rubric'] = rubric.data.map do |row|
+        row_hash = row.slice(:id, :points, :description, :long_description)
+        row_hash["ratings"] = row[:ratings].map { |c| c.slice(:id, :points, :description) }
+        row_hash
+      end
+      hash['rubric_settings'] = {
+        'points_possible' => rubric.points_possible,
+        'free_form_criterion_comments' => !!rubric.free_form_criterion_comments,
+      }
+    end
 
-    if assignment.discussion_topic
-      hash['discussion_topic'] = discussion_topic_api_json(assignment.discussion_topic, assignment.discussion_topic.context, user, session)
+    if include_discussion_topic && assignment.discussion_topic
+      extend Api::V1::DiscussionTopics
+      hash['discussion_topic'] = discussion_topic_api_json(assignment.discussion_topic, assignment.discussion_topic.context, user, session, !:include_assignment)
     end
 
     hash
+  end
+
+  API_ALLOWED_ASSIGNMENT_FIELDS = %w(name position points_possible grading_type due_at description)
+
+  def create_api_assignment(context, assignment_params)
+    assignment = context.assignments.build
+    update_api_assignment(assignment, assignment_params)
+  end
+
+  def update_api_assignment(assignment, assignment_params)
+    return nil unless assignment_params.is_a?(Hash)
+    update_params = assignment_params.slice(*API_ALLOWED_ASSIGNMENT_FIELDS)
+    update_params["time_zone_edited"] = Time.zone.name if update_params["due_at"]
+
+    assignment.update_attributes(update_params)
+    assignment.infer_due_at
+    # TODO: allow rubric creation
+
+    if custom_vals = assignment_params[:set_custom_field_values]
+      assignment.set_custom_field_values = custom_vals
+    end
+    return assignment
   end
 end

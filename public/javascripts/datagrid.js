@@ -16,10 +16,18 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-var datagrid = {};
-(function() {
+define([
+  'INST' /* INST */,
+  'jquery' /* $ */,
+  'ajax_errors' /* INST.log_error */,
+  'jquery.instructure_misc_plugins' /* showIf */,
+  'jquery.keycodes' /* keycodes */,
+  'jquery.scrollToVisible' /* scrollToVisible */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'jqueryui/position' /* /\.position\(/ */
+], function(INST, $) {
 
-  datagrid = {
+  var datagrid = {
     columns: [],
     rows: [],
     dataRows: [],
@@ -31,6 +39,7 @@ var datagrid = {};
       var tick = options.tick;
       var maxWidth = options.maxWidth || 150;
       datagrid.borderSize = options.borderSize || 1;
+      datagrid.paddingBottom = options.paddingBottom || 0;
       if(options.scroll && $.isFunction(options.scroll)) {
         datagrid.scrollCallback = options.scroll;
       }
@@ -578,7 +587,8 @@ var datagrid = {};
           windowHeight = $(window).height() - spacer - datagrid.divs.top.offset().top,
           windowWidth = $holder.width() - spacer,
           newWidth = Math.floor(windowWidth - datagrid.columns[0].metrics.outerWidth),
-          newHeight = Math.floor(windowHeight - datagrid.rows[0].metrics.height - datagrid.borderSize);
+          newHeight = Math.floor(windowHeight - datagrid.rows[0].metrics.height - 
+                                 datagrid.borderSize - datagrid.paddingBottom);
 
       datagrid.divs.top.width(newWidth);
       datagrid.divs.data.width(newWidth);
@@ -673,4 +683,6 @@ var datagrid = {};
       datagrid.scrollTo($new.row, $new.column);
     }
   }
-})();
+
+  return datagrid;
+});

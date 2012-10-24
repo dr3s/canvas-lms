@@ -46,6 +46,7 @@ describe UsersController, :type => :integration do
           'points_possible' => 10,
           'submission_types' => ['online_text_entry'],
           'due_at' => @a.due_at.as_json,
+          'html_url' => course_assignment_url(@a.context_id, @a),
         },
         'ignore' => api_v1_users_todo_ignore_url(@a.asset_string, 'submitting', :permanent => 0),
         'ignore_permanently' => api_v1_users_todo_ignore_url(@a.asset_string, 'submitting', :permanent => 1),
@@ -63,8 +64,10 @@ describe UsersController, :type => :integration do
           'course_id' => @teacher_course.id,
           'muted' => false,
           'points_possible' => 15,
+          'needs_grading_count' => 1,
           'submission_types' => ['online_text_entry'],
           'due_at' => @a2.due_at.as_json,
+          'html_url' => course_assignment_url(@a2.context_id, @a2),
         },
         'needs_grading_count' => 1,
         'ignore' => api_v1_users_todo_ignore_url(@a2.asset_string, 'grading', :permanent => 0),
@@ -86,13 +89,13 @@ describe UsersController, :type => :integration do
   it "should check for auth" do
     get("/api/v1/users/self/todo")
     response.status.should == '401 Unauthorized'
-    JSON.parse(response.body).should == { 'status' => 'unauthorized' }
+    JSON.parse(response.body).should == {"message"=>"Invalid access token.", "status"=>"unauthorized"}
 
     @course = factory_with_protected_attributes(Course, course_valid_attributes)
     raw_api_call(:get, "/api/v1/courses/#{@course.id}/todo",
                 :controller => "courses", :action => "todo_items", :format => "json", :course_id => @course.to_param)
     response.status.should == '401 Unauthorized'
-    JSON.parse(response.body).should == { 'status' => 'unauthorized' }
+    JSON.parse(response.body).should == { 'status' => 'unauthorized', 'message' => 'You are not authorized to perform that action.' }
   end
 
   it "should return a global user todo list" do
@@ -109,6 +112,15 @@ describe UsersController, :type => :integration do
     json = api_call(:get, "/api/v1/courses/#{@teacher_course.id}/todo",
                     :controller => "courses", :action => "todo_items", :format => "json", :course_id => @teacher_course.to_param)
     json.should == [@a2_json]
+  end
+
+  it "should return a list for users who are both teachers and students" do
+    @student_course.enroll_teacher(@user)
+    @teacher_course.enroll_student(@user)
+    json = api_call(:get, "/api/v1/users/self/todo",
+                    :controller => "users", :action => "todo_items", :format => "json")
+    @a1_json.deep_merge!({ 'assignment' => { 'needs_grading_count' => 0 } })
+    json.sort_by { |t| t['assignment']['id'] }.should == [@a1_json, @a2_json]
   end
 
   it "should ignore a todo item permanently" do
@@ -141,6 +153,7 @@ describe UsersController, :type => :integration do
     json = api_call(:get, "/api/v1/courses/#{@teacher_course.id}/todo",
                     :controller => "courses", :action => "todo_items", :format => "json", :course_id => @teacher_course.to_param)
     @a2_json['needs_grading_count'] = 2
+    @a2_json['assignment']['needs_grading_count'] = 2
     json.should == [@a2_json]
   end
 end

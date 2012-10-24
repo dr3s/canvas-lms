@@ -74,7 +74,8 @@ describe ContextModule do
     it "should not allow adding invalid prerequisites" do
       course_module
       @module2 = @course.context_modules.create!(:name => "next module")
-      @module2.prerequisites = "module_#{@module.id},module_99"
+      invalid = course().context_modules.create!(:name => "nope")
+      @module2.prerequisites = "module_#{@module.id},module_#{invalid.id}"
       @module2.save!
       @module2.prerequisites.should be_is_a(Array)
       @module2.prerequisites.should_not be_empty
@@ -105,21 +106,7 @@ describe ContextModule do
       @tag.content.should eql(@page)
       @module.content_tags.should be_include(@tag)
     end
-    
-    it "should add pages from secondary wikis" do
-      course_module
-      @course.wiki
-      @wiki = Wiki.create!(:title => "new wiki")
-      @namespace = @course.wiki_namespaces.build
-      @namespace.wiki = @wiki
-      @namespace.save!
-      @page = @wiki.wiki_pages.create!(:title => "new page")
-      @tag = @module.add_item({:id => @page.id, :type => 'wiki_page'})
-      @tag.should_not be_nil
-      @tag.content.should eql(@page)
-      @module.content_tags.should be_include(@tag)
-    end
-    
+
     it "should not add invalid wiki pages" do
       course_module
       @course.wiki
@@ -135,6 +122,22 @@ describe ContextModule do
       @tag = @module.add_item({:id => @file.id, :type => 'attachment'}) #@file)
       @tag.content.should eql(@file)
       @module.content_tags.should be_include(@tag)
+    end
+
+    it "should allow adding items more than once" do
+      course_module
+      @assignment = @course.assignments.create!(:title => "some assignment")
+      @tag1 = @module.add_item(:id => @assignment.id, :type => "assignment")
+      @tag2 = @module.add_item(:id => @assignment.id, :type => "assignment")
+      @tag1.should_not == @tag2
+      @module.content_tags.should be_include(@tag1)
+      @module.content_tags.should be_include(@tag2)
+
+      @mod2 = @course.context_modules.create!(:name => "mod2")
+      @tag3 = @mod2.add_item(:id => @assignment.id, :type => "assignment")
+      @tag3.should_not == @tag1
+      @tag3.should_not == @tag2
+      @mod2.content_tags.should == [@tag3]
     end
   end
   
@@ -247,6 +250,32 @@ describe ContextModule do
       @progression = @module2.evaluate_for(@user, true)
       @progression.should_not be_nil
       @progression.should be_locked
+    end
+
+    describe "multi-items" do
+      it "should be locked if all tags are locked" do
+        course_module
+        @user = User.create!(:name => "some name")
+        @course.enroll_student(@user)
+        @a1 = @course.assignments.create!(:title => "some assignment")
+        @tag1 = @module.add_item({:id => @a1.id, :type => 'assignment'})
+        @module.require_sequential_progress = true
+        @module.completion_requirements = {@tag1.id => {:type => 'must_submit'}}
+        @module.save!
+        @a2 = @course.assignments.create!(:title => "locked assignment")
+        @a2.locked_for?(@user).should be_false
+        @tag2 = @module.add_item({:id => @a2.id, :type => 'assignment'})
+        @a2.reload.locked_for?(@user).should be_true
+
+        @mod2 = @course.context_modules.create!(:name => "mod2")
+        @tag3 = @mod2.add_item({:id => @a2.id, :type => 'assignment'})
+        # not locked, because the second tag allows access
+        @a2.reload.locked_for?(@user).should be_false
+        @mod2.prerequisites = "module_#{@module.id}"
+        @mod2.save!
+        # now locked, because mod2 is locked
+        @a2.reload.locked_for?(@user).should be_true
+      end
     end
 
     it "should not be available if previous module is incomplete" do
@@ -382,6 +411,32 @@ describe ContextModule do
       @progression = @module.evaluate_for(@user)
       @progression.should be_completed
     end
+    
+    it "should mark progression completed for min_score on discussion topic assignment" do
+      asmnt = assignment_model(:submission_types => "discussion_topic", :points_possible => 10)
+      topic = asmnt.discussion_topic
+      course_with_student(:active_all => true, :course => @course)
+      mod = @course.context_modules.create!(:name => "some module")
+      
+      tag = mod.add_item({:id => topic.id, :type => 'discussion_topic'})
+      mod.completion_requirements = {tag.id => {:type => 'min_score', :min_score => 5}}
+      mod.save!
+      
+      p = mod.evaluate_for(@student)
+      p.requirements_met.should == []
+      p.workflow_state.should == 'unlocked'
+      
+      entry = topic.discussion_entries.create!(:message => "hi", :user => @student)
+      asmnt.reload
+      sub = asmnt.submissions.first
+      sub.score = 5
+      sub.workflow_state = 'graded'
+      sub.save!
+      
+      p = mod.evaluate_for(@student)
+      p.requirements_met.should == [{:type=>"min_score", :min_score=>5, :max_score=>nil, :id=>tag.id}]
+      p.workflow_state.should == 'completed'
+    end
   end
   describe "require_sequential_progress" do
     it "should update progression status on grading and view events" do
@@ -422,7 +477,7 @@ describe ContextModule do
       @progression.current_position.should eql(@tag2.position)
       @assignment.reload; @assignment2.reload
       @assignment.locked_for?(@user).should eql(false)
-      @assignment2.locked_for?(@user).should_not eql(false)
+      @assignment2.locked_for?(@user).should eql(false)
       
       @module.completion_requirements = {@tag.id => {:type => 'min_score', :min_score => 5}}
       @module.save
@@ -554,8 +609,10 @@ describe ContextModule do
       @old_module = @module
       @old_assignment = @course.assignments.create!(:title => "my assignment")
       @old_tag = @old_module.add_item({:type => 'assignment', :id => @old_assignment.id})
+      ct = @old_module.add_item({ :title => 'Broken url example', :type => 'external_url', :url => 'http://example.com/with%20space' })
+      ContentTag.update_all({:url => "http://example.com/with space"}, "id=#{ct.id}")
       @old_module.reload
-      @old_module.content_tags.length.should eql(1)
+      @old_module.content_tags.length.should eql(2)
       course_model
       @module = @old_module.clone_for(@course)
       @module.should_not eql(@old_module)
@@ -565,13 +622,16 @@ describe ContextModule do
       @module.reload
       @course.reload
       @old_tag.reload
-      @module.content_tags.length.should eql(1)
+      
+      @module.content_tags.length.should eql(2)
       @tag = @module.content_tags.first
       @tag.should_not eql(@old_tag)
       @tag.cloned_item_id.should eql(@old_tag.cloned_item_id)
       @tag.content.should_not eql(@old_tag.content)
       @tag.content.should eql(@course.assignments.first)
       @tag.content.cloned_item_id.should eql(@old_tag.content.cloned_item_id)
+      ct2 = @module.content_tags[1]
+      ct2.url.should == 'http://example.com/with%20space'
     end
     
     it "should update module requirements to reflect new tag id's" do

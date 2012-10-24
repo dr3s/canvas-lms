@@ -1,31 +1,15 @@
+$canvas_tasks_loaded ||= false
+unless $canvas_tasks_loaded
+$canvas_tasks_loaded = true
+
 def check_syntax(files)
   quick = ENV["quick"] && ENV["quick"] == "true"
 
-  files_not_to_lint = %w{
-    public/javascripts/date.js
-    public/javascripts/jquery-1.4.js
-    public/javascripts/jquery.ba-hashchange.js
-    public/javascripts/jquery-ui-1.8.js
-    public/javascripts/jquery.ba-throttle-debounce.js
-    public/javascripts/scribd.view.js
-    public/javascripts/swfobject/swfobject.js
-    public/javascripts/ui.selectmenu.js
-    public/javascripts/raphael.js
-    public/javascripts/g.raphael/g.raphael.js
-    public/javascripts/g.raphael/g.pie.js
-    public/javascripts/g.raphael/g.bar.js
-    public/javascripts/g.raphael/g.dot.js
-    public/javascripts/g.raphael/g.line.js
-    public/javascripts/underscore.js
-    public/flash/uploadify/jquery.uploadify.v2.1.0.js
-    public/javascripts/json2.js
-  }
   show_stoppers = []
   Array(files).each do |js_file|
     js_file.strip!
-    if files_not_to_lint.include?(js_file) || !js_file.match('public/javascripts/') || js_file.match('public/javascripts/vendor/')
-      puts " --> \033[1;35m  skipping: #{js_file}\033[0m"
-    else
+    # only lint things in public/javascripts that are not in /vendor, /compiled, etc.
+    if js_file.match /public\/javascripts\/(?!vendor|compiled|i18n.js|translations)/
       file_path = File.join(Rails.root, js_file)
 
       unless quick
@@ -35,7 +19,7 @@ def check_syntax(files)
         # brew install node
         # npm install jshint
         unless `which jshint`.empty?
-          puts " --> \033[1;33m  Checking #{js_file} using JSHint: \033[0m"
+          puts " --> Checking #{js_file} using JSHint:"
           js_hint_errors = `jshint #{file_path} --config "#{File.join(Rails.root, '.jshintrc')}"`
           puts js_hint_errors
         end
@@ -44,31 +28,29 @@ def check_syntax(files)
         # Only works if you have gjslint installed.
         # Download from http://code.google.com/closure/utilities/
         unless `which gjslint`.empty?
-          puts " --> \033[1;33m  Checking #{js_file} using gjslint.py: \033[0m"
+          puts " --> Checking #{js_file} using gjslint.py:"
           gjslint_errors = `gjslint --nojsdoc --strict #{js_file}`
           puts gjslint_errors = gjslint_errors.split("\n").reject{ |l| l.match("Line too long") }.join("\n")
         end
       end
 
       raise "jsl needs to be in your $PATH, download from: javascriptlint.com" if `which jsl`.empty?
-      puts " --> \033[1;33m  Checking #{js_file} using jsl: \033[0m"
       jsl_output = `jsl -process "#{file_path}" -nologo -conf "#{File.join(Rails.root, 'config', 'jslint.conf')}"`
       exit_status = $?.exitstatus
       if exit_status != 0
-        if jsl_output.match("warning: trailing comma is not legal in ECMA-262 object initializers")
+        puts " --> Error checking #{js_file} using jsl:"
+        if jsl_output.match("warning: trailing comma is not legal in ECMA-262 object initializers") || jsl_output.match("extra comma is not recommended in array initializers")
           exit_status = 2
           jsl_output << "fatal trailing comma found. Stupid IE!"
         end
         if exit_status >= 2
           show_stoppers << jsl_output
-          puts "\033[1;31m #{jsl_output} \033[0m"
-        else
-          puts jsl_output
         end
+        puts jsl_output
       end
     end
   end
-  raise "\033[1;31m Fatal JavaScript errors found \033[0m" unless show_stoppers.empty?
+  raise "Fatal JavaScript errors found" unless show_stoppers.empty?
 end
 
 
@@ -101,33 +83,67 @@ namespace :canvas do
 
     desc "Checks all js files for sytax errors."
     task :all do
-      bundles = YAML.load(ERB.new(File.read('config/assets.yml')).result)['javascripts']
-      bundles.each do |bundle_name, bundle_files|
-        puts "------------------------------------------------------------"
-        puts "checking bundle: " + bundle_name
-        check_syntax(bundle_files)
-      end
+      #bundles = YAML.load(ERB.new(File.read('config/assets.yml')).result)['javascripts']
+      files = (Dir.glob('./public/javascripts/*.js')).
+        reject{ |file| file =~ /\A\.\/public\/javascripts\/(i18n.js|translations\/)/ }
+
+      check_syntax(files)
     end
   end
 
   desc "Compile javascript and css assets."
-  task :compile_assets do
-    puts "--> Compiling static assets [compass compile -e production --force]"
-    output = `bundle exec compass compile -e production --force 2>&1`
-    raise "Error running compass: \n#{output}\nABORTING" if $?.exitstatus != 0
+  task :compile_assets, :generate_documentation do |t, args|
+    args.with_defaults(:generate_documentation => 'true')
+    generate_docs = args[:generate_documentation]
+    generate_docs = 'true' if !['true', 'false'].include?(args[:generate_documentation])
 
+    puts "--> Compiling static assets [css]"
+    Rake::Task['css:generate'].invoke
+
+    puts "--> Compiling static assets [jammit]"
+    output = `bundle exec jammit 2>&1`
+    raise "Error running jammit: \n#{output}\nABORTING" if $?.exitstatus != 0
+    puts "--> Compiled static assets [css/jammit]"
+
+    puts "--> Compiling static assets [javascript]"
     Rake::Task['js:generate'].invoke
 
     puts "--> Generating js localization bundles"
     Rake::Task['i18n:generate_js'].invoke
 
-    puts "--> Compiling static assets [jammit]"
-    output = `bundle exec jammit 2>&1`
-    raise "Error running jammit: \n#{output}\nABORTING" if $?.exitstatus != 0
+    puts "--> Optimizing JavaScript [r.js]"
+    Rake::Task['js:build'].invoke
 
-    puts "--> Generating documentation [yardoc]"
-    Rake::Task['doc:api'].invoke
+    if generate_docs == 'true'
+      puts "--> Generating documentation [yardoc]"
+      Rake::Task['doc:api'].invoke
+      end
   end
+
+  desc "Check static assets and generate api documentation."
+     task :check_static_assets do
+       threads = []
+       threads << Thread.new do
+         puts "--> JS tests"
+         Rake::Task['js:test'].invoke
+       end
+
+       threads << Thread.new do
+         puts "--> i18n check"
+         Rake::Task['i18n:check'].invoke
+       end
+
+       threads << Thread.new do
+         puts "--> Check syntax"
+         Rake::Task['canvas:check_syntax'].invoke
+       end
+
+       threads << Thread.new do
+         puts "--> Generating API documentation"
+         Rake::Task['doc:api'].invoke
+       end
+     threads.each(&:join)
+   end
 end
 
 namespace :db do
@@ -135,7 +151,21 @@ namespace :db do
   task :pending_migrations => :environment do
     pending_migrations = ActiveRecord::Migrator.new(:up, 'db/migrate').pending_migrations
     pending_migrations.each do |pending_migration|
-      puts '  %4d %s' % [pending_migration.version, pending_migration.name]
+      tags = pending_migration.tags
+      tags = " (#{tags.join(', ')})" unless tags.empty?
+      puts '  %4d %s%s' % [pending_migration.version, pending_migration.name, tags]
+    end
+  end
+
+  namespace :migrate do
+    desc "Run all pending predeploy migrations"
+    task :predeploy => [:environment, :load_config] do
+      ActiveRecord::Migrator.new(:up, "db/migrate/", nil).migrate(:predeploy)
+    end
+
+    desc "Run all pending postdeploy migrations"
+    task :postdeploy => [:environment, :load_config] do
+      ActiveRecord::Migrator.new(:up, "db/migrate/", nil).migrate(:postdeploy)
     end
   end
 
@@ -153,4 +183,6 @@ namespace :db do
       end
     end
   end
+end
+
 end

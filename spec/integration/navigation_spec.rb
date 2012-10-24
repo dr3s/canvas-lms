@@ -41,7 +41,7 @@ describe "navigation" do
     # order of tests assumes alphabetical order of list
     list[4].text.should match /Summer Term/m # course 3, Summer Term
     list[3].text.should match /Spring Term/m # course 3, Spring Term
-    list[2].text.should_not match /Term/ # don't show term cause it doesn't have a name collision
+    list[2].text.should match /Spring Term/ # don't show term cause it doesn't have a name collision
     list[1].text.should_not match /Term/ # don't show term cause it's the default term
     list[0].text.should_not match /Term/ # "
   end
@@ -52,19 +52,8 @@ describe "navigation" do
     list = page.css(".menu-item-drop")
   end
 
-  it "should not show the 'customize' button with <= 12 enrollments" do
-    12.times do |int|
-      course_with_teacher :course_name => "Course #{int}", :user => @user, :active_all => true
-    end
-    get '/'
-    page = Nokogiri::HTML(response.body)
-    page.css('.customListOpen').should be_empty
-  end
-
-  it "should show the 'customize' button with > 12 enrollments" do
-    13.times do |int|
-      course_with_teacher :course_name => "Course #{int}", :user => @user, :active_all => true
-    end
+  it "should show the 'customize' button" do
+    course_with_teacher :course_name => "Course of doom", :user => @user, :active_all => true
     get '/'
     page = Nokogiri::HTML(response.body)
     page.css('.customListOpen').should_not be_empty

@@ -15,6 +15,8 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+define(['jquery', 'jquery.google-analytics'], function($) {
+
 if(!$("#tool_form").hasClass('new_tab')) {
   $("#content").addClass('padless');
 } else {
@@ -30,6 +32,10 @@ if(!$("#tool_form").hasClass('new_tab')) {
     $(this).find(".load_tab,.tab_loaded").toggle();
   });
 }
+
+var toolName = $("#tool_form").attr('data-tool-id') || "unknown";
+$.trackEvent('tool_launch', toolName);
+
 $("#tool_form:not(.new_tab)").submit().hide();
 $(document).ready(function() {
   if($("#tool_content").length) {
@@ -39,4 +45,6 @@ $(document).ready(function() {
       $("#tool_content").height(height - top);
     }).triggerHandler('resize');
   }
+});
+
 });

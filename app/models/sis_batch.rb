@@ -19,7 +19,6 @@
 class SisBatch < ActiveRecord::Base
   include Workflow
   belongs_to :account
-  has_many :sis_batch_log_entries, :order => :created_at
   serialize :data
   serialize :options
   serialize :processing_errors, Array
@@ -44,28 +43,35 @@ class SisBatch < ActiveRecord::Base
       }
   end
 
+  # If you are going to change any settings on the batch before it's processed,
+  # do it in the block passed into this method, so that the changes are saved
+  # before the batch is marked created and eligible for processing.
   def self.create_with_attachment(account, import_type, attachment)
     batch = SisBatch.new
     batch.account = account
     batch.progress = 0
-    batch.workflow_state = :created
+    batch.workflow_state = :initializing
     batch.data = {:import_type => import_type}
     batch.save
 
-    Attachment.skip_scribd_submits(true)
+    Attachment.skip_3rd_party_submits(true)
     att = Attachment.new
     att.context = batch
     att.uploaded_data = attachment
     att.display_name = t :upload_filename, "sis_upload_%{id}.zip", :id => batch.id
-    att.save
-    Attachment.skip_scribd_submits(false)
+    att.save!
+    Attachment.skip_3rd_party_submits(false)
     batch.attachment = att
-    batch.save
+
+    yield batch if block_given?
+    batch.workflow_state = :created
+    batch.save!
 
     batch
   end
 
   workflow do
+    state :initializing
     state :created
     state :importing
     state :imported
@@ -75,6 +81,19 @@ class SisBatch < ActiveRecord::Base
   end
 
   def process
+    process_delay = Setting.get_cached('sis_batch_process_start_delay', '0').to_f
+    job_args = { :singleton => "sis_batch:account:#{Shard.default.activate { self.account_id }}", :priority => Delayed::LOW_PRIORITY }
+    if process_delay > 0
+      job_args[:run_at] = process_delay.seconds.from_now
+    end
+
+    SisBatch.send_later_enqueue_args(:process_all_for_account, job_args, self.account)
+  end
+
+  # this method name is to stay backwards compatible with existing jobs when we deploy
+  # once no SisBatch#process_without_send_later jobs are being created anymore, we
+  # can rename this to something more sensible.
+  def process_without_send_later
     self.options ||= {}
     if self.workflow_state == 'created'
       self.workflow_state = :importing
@@ -96,9 +115,16 @@ class SisBatch < ActiveRecord::Base
     self.workflow_state = "failed"
     self.save
   end
-  handle_asynchronously :process, :strand => proc { |sis_batch| "sis_batch:account:#{sis_batch.account_id}" }, :priority => Delayed::LOW_PRIORITY
 
   named_scope :needs_processing, :conditions => { :workflow_state => 'created' }, :order => :created_at
+
+  def self.process_all_for_account(account)
+    loop do
+      batches = account.sis_batches.needs_processing.all(:limit => 1000, :order => :created_at)
+      break if batches.empty?
+      batches.each { |batch| batch.process_without_send_later }
+    end
+  end
 
   def fast_update_progress(val)
     self.progress = val
@@ -144,25 +170,33 @@ class SisBatch < ActiveRecord::Base
   def remove_previous_imports
     # we shouldn't be able to get here without a term, but if we do, skip
     return unless self.batch_mode_term
+    return unless data[:supplied_batches]
 
-    # delete courses that weren't in this batch, in the selected term
-    scope = Course.active.for_term(self.batch_mode_term).scoped(:conditions => ["courses.root_account_id = ?", self.account.id])
-    scope.scoped(:conditions => ["sis_batch_id is not null and sis_batch_id <> ?", self.id.to_s]).find_each do |course|
-      course.destroy
+    if data[:supplied_batches].include?(:course)
+      # delete courses that weren't in this batch, in the selected term
+      scope = Course.active.for_term(self.batch_mode_term).scoped(:conditions => ["courses.root_account_id = ?", self.account.id])
+      scope.scoped(:conditions => ["sis_batch_id is not null and sis_batch_id <> ?", self.id]).find_each do |course|
+        course.clear_sis_stickiness(:workflow_state)
+        course.destroy
+      end
     end
 
-    # delete sections who weren't in this batch, whose course was in the selected term
-    scope = CourseSection.scoped(:conditions => ["course_sections.workflow_state = ? and course_sections.root_account_id = ? and course_sections.sis_batch_id is not null and course_sections.sis_batch_id <> ?", 'active', self.account.id, self.id.to_s])
-    scope = scope.scoped(:include => :course, :select => "course_sections.*", :conditions => ["courses.enrollment_term_id = ?", self.batch_mode_term.id])
-    scope.find_each do |section|
-      section.destroy
+    if data[:supplied_batches].include?(:section)
+      # delete sections who weren't in this batch, whose course was in the selected term
+      scope = CourseSection.scoped(:conditions => ["course_sections.workflow_state = ? and course_sections.root_account_id = ? and course_sections.sis_batch_id is not null and course_sections.sis_batch_id <> ?", 'active', self.account.id, self.id])
+      scope = scope.scoped(:include => :course, :select => "course_sections.*", :conditions => ["courses.enrollment_term_id = ?", self.batch_mode_term.id])
+      scope.find_each do |section|
+        section.destroy
+      end
     end
 
-    # delete enrollments for courses that weren't in this batch, in the selected term
-    scope = Enrollment.active.scoped(:include => :course, :select => "enrollments.*", :conditions => ["courses.root_account_id = ? and enrollments.sis_batch_id is not null and enrollments.sis_batch_id <> ?", self.account.id, self.id.to_s])
-    scope = scope.scoped(:conditions => ["courses.enrollment_term_id = ?", self.batch_mode_term.id])
-    scope.find_each do |enrollment|
-      enrollment.destroy
+    if data[:supplied_batches].include?(:enrollment)
+      # delete enrollments for courses that weren't in this batch, in the selected term
+      scope = Enrollment.active.scoped(:include => :course, :select => "enrollments.*", :conditions => ["courses.root_account_id = ? and enrollments.sis_batch_id is not null and enrollments.sis_batch_id <> ?", self.account.id, self.id])
+      scope = scope.scoped(:conditions => ["courses.enrollment_term_id = ?", self.batch_mode_term.id])
+      scope.find_each do |enrollment|
+        enrollment.destroy
+      end
     end
   end
 
@@ -178,7 +212,6 @@ class SisBatch < ActiveRecord::Base
     }
     data["processing_errors"] = self.processing_errors if self.processing_errors.present?
     data["processing_warnings"] = self.processing_warnings if self.processing_warnings.present?
-    data["sis_batch_log_entries"] = self.sis_batch_log_entries if self.sis_batch_log_entries.present?
     return data.to_json
   end
 

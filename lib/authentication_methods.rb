@@ -17,20 +17,20 @@
 #
 
 module AuthenticationMethods
-  
+
   def authorized(*groups)
     authorized_roles = groups
     return true
   end
-  
+
   def authorized_roles
     @authorized_roles ||= []
   end
-  
+
   def consume_authorized_roles
     authorized_roles = []
   end
-  
+
   def load_pseudonym_from_policy
     skip_session_save = false
     if session.to_hash.empty? && # if there's already some session data, defer to normal auth
@@ -49,24 +49,39 @@ module AuthenticationMethods
     session.destroy if skip_session_save
   end
 
-  def load_user
-    if api_request? && params[:access_token]
-      @access_token = AccessToken.find_by_token(params[:access_token])
-      @developer_key = @access_token.try(:developer_key)
+  class AccessTokenError < Exception
+  end
+
+  def load_pseudonym_from_access_token
+    return unless api_request? || params[:action] == 'oauth2_logout'
+
+    auth_header = ActionController::HttpAuthentication::Basic.authorization(request)
+    token_string = if auth_header.present? && (header_parts = auth_header.split(' ', 2)) && header_parts[0] == 'Bearer'
+      header_parts[1]
+    elsif params[:access_token].present?
+      params[:access_token]
+    end
+
+    if token_string
+      @access_token = AccessToken.find_by_token(token_string)
       if !@access_token.try(:usable?)
-        render :json => {:errors => "Invalid access token"}, :status => :bad_request
-        return false
+        raise AccessTokenError
       end
       @current_user = @access_token.user
-      @current_pseudonym = @current_user.find_pseudonym_for_account(@domain_root_account)
+      @current_pseudonym = @current_user.find_pseudonym_for_account(@domain_root_account, true)
       unless @current_user && @current_pseudonym
-        render :json => {:errors => "Invalid access token"}, :status => :bad_request
-        return false
+        raise AccessTokenError
       end
       @access_token.used!
     end
+  end
 
-    if !@access_token
+  def load_user
+    @current_user = @current_pseudonym = nil
+
+    load_pseudonym_from_access_token
+
+    if !@current_pseudonym
       if @policy_pseudonym_id
         @current_pseudonym = Pseudonym.find_by_id(@policy_pseudonym_id)
       else
@@ -83,14 +98,21 @@ module AuthenticationMethods
       if api_request?
         # only allow api_key to be used if basic auth was sent, not if they're
         # just using an app session
-        @developer_key = DeveloperKey.find_by_api_key(params[:api_key]) if @pseudonym_session.try(:used_basic_auth?) && params[:api_key].present?
-        @developer_key || request.get? || form_authenticity_token == form_authenticity_param || raise(ApplicationController::InvalidDeveloperAPIKey)
+        # this basic auth support is deprecated and marked for removal in 2012
+        if @pseudonym_session.try(:used_basic_auth?) && params[:api_key].present?
+          Shard.default.activate { @developer_key = DeveloperKey.find_by_api_key(params[:api_key]) }
+        end
+        @developer_key || request.get? || form_authenticity_token == form_authenticity_param || form_authenticity_token == request.headers['X-CSRF-Token'] || raise(AccessTokenError)
       end
     end
 
     if @current_user && @current_user.unavailable?
       @current_pseudonym = nil
-      @current_user = nil 
+      @current_user = nil
+    end
+
+    if api_request? && !@current_user
+      raise AccessTokenError
     end
 
     if @current_user && %w(become_user_id me become_teacher become_student).any? { |k| params.key?(k) }
@@ -117,7 +139,7 @@ module AuthenticationMethods
         end
       end
 
-      if request_become_user && request_become_user.id != session[:become_user_id].to_i && request_become_user.grants_right?(@current_user, session, :become_user)
+      if request_become_user && request_become_user.id != session[:become_user_id].to_i && request_become_user.can_masquerade?(@current_user, @domain_root_account)
         params_without_become = params.dup
         params_without_become.delete_if {|k,v| [ 'become_user_id', 'become_teacher', 'become_student', 'me' ].include? k }
         params_without_become[:only_path] = true
@@ -126,65 +148,33 @@ module AuthenticationMethods
       end
     end
 
-    as_user_id = api_request? && params[:as_user_id]
+    as_user_id = api_request? && params[:as_user_id].presence
     as_user_id ||= session[:become_user_id]
-    begin
-      if as_user_id && (user = api_find(User, as_user_id)) && user.grants_right?(@current_user, session, :become_user)
+    if as_user_id
+      begin
+        user = api_find(User, as_user_id)
+      rescue ActiveRecord::RecordNotFound
+      end
+      if user && user.can_masquerade?(@current_user, @domain_root_account)
         @real_current_user = @current_user
         @current_user = user
+        @real_current_pseudonym = @current_pseudonym
+        @current_pseudonym = @current_user.find_pseudonym_for_account(@domain_root_account, true)
         logger.warn "#{@real_current_user.name}(#{@real_current_user.id}) impersonating #{@current_user.name} on page #{request.url}"
+      elsif api_request?
+        # fail silently for UI, but not for API
+        render :json => {:errors => "Invalid as_user_id"}, :status => :unauthorized
+        return false
       end
-    rescue ActiveRecord::RecordNotFound
-      # fail silently
     end
 
     @current_user
   end
   private :load_user
-  
-  def require_user_for_context
-    get_context
-    if !@context
-      redirect_to '/'
-      return false
-    elsif @context.state == 'available'
-      if !@current_user 
-        respond_to do |format|
-          store_location
-          flash[:notice] = I18n.t('lib.auth.errors.not_authenticated', "You must be logged in to access this page")
-          format.html {redirect_to login_url}
-          format.json {render :json => {:errors => {:message => I18n.t('lib.auth.errors.not_authenticated', "You must be logged in to access this page")}}, :status => :unauthorized}
-        end
-        return false;
-      elsif !@context.users.include?(@current_user)
-        respond_to do |format|
-          flash[:notice] = I18n.t('lib.auth.errors.not_authorized', "You are not authorized to view this page")
-          format.html {redirect_to "/"}
-          format.json {render :json => {:errors => {:message => I18n.t('lib.auth.errors.not_authorized', "You are not authorized to view this page")}}, :status => :unauthorized}
-        end
-        return false
-      end
-    end
-  end
-  protected :require_user_for_context
-  
+
   def require_user
-    unless @current_pseudonym && @current_user
-      respond_to do |format|
-        if request.path.match(/getting_started/)
-          format.html {
-            store_location
-            redirect_to register_url
-          }
-        else
-          format.html {
-            store_location
-            flash[:notice] = I18n.t('lib.auth.errors.not_authenticated', "You must be logged in to access this page") unless request.path == '/'
-            redirect_to login_url
-          }
-        end
-        format.json { render :json => {:errors => {:message => I18n.t('lib.auth.authentication_required', "user authorization required")}}.to_json, :status => :unauthorized}
-      end
+    unless @current_user && @current_pseudonym
+      redirect_to_login
       return false
     end
   end
@@ -199,7 +189,7 @@ module AuthenticationMethods
 
   def redirect_back_or_default(default)
     redirect_to(session[:return_to] || default)
-    session[:return_to] = nil
+    session.delete(:return_to)
   end
   protected :redirect_back_or_default
 
@@ -207,6 +197,19 @@ module AuthenticationMethods
     redirect_to(:back)
   rescue ActionController::RedirectBackError
     redirect_to(default)
+  end
+
+  def redirect_to_login
+    respond_to do |format|
+      format.html {
+        store_location
+        flash[:warning] = I18n.t('lib.auth.errors.not_authenticated', "You must be logged in to access this page") unless request.path == '/'
+        opts = {}
+        opts[:canvas_login] = 1 if params[:canvas_login]
+        redirect_to login_url(opts) # should this have :no_auto => 'true' ?
+      }
+      format.json { render :json => {:errors => {:message => I18n.t('lib.auth.authentication_required', "user authorization required")}}.to_json, :status => :unauthorized}
+    end
   end
 
   # Reset the session, and copy the specified keys over to the new session.
@@ -220,10 +223,10 @@ module AuthenticationMethods
   end
 
   def reset_session_for_login
-    reset_session_saving_keys(:return_to, :oauth2, :confirm, :enrollment, :expected_user_id)
+    reset_session_saving_keys(:return_to, :oauth2, :confirm, :enrollment, :expected_user_id, :masquerade_return_to)
   end
 
-  def initiate_delegated_login(preferred_account_domain=nil)
+  def initiate_delegated_login(current_host=nil)
     is_delegated = @domain_root_account.delegated_authentication? && !params[:canvas_login]
     is_cas = @domain_root_account.cas_authentication? && is_delegated
     is_saml = @domain_root_account.saml_authentication? && is_delegated
@@ -231,7 +234,7 @@ module AuthenticationMethods
       initiate_cas_login
       return true
     elsif is_saml
-      initiate_saml_login(preferred_account_domain)
+      initiate_saml_login(current_host)
       return true
     end
     false
@@ -239,25 +242,32 @@ module AuthenticationMethods
 
   def initiate_cas_login(cas_client = nil)
     reset_session_for_login
-    if @domain_root_account.account_authorization_config.log_in_url.present? && !in_oauth_flow?
-      session[:exit_frame] = true
-      delegated_auth_redirect(@domain_root_account.account_authorization_config.log_in_url)
-    else
-      config = { :cas_base_url => @domain_root_account.account_authorization_config.auth_base }
-      cas_client ||= CASClient::Client.new(config)
-      delegated_auth_redirect(cas_client.add_service_to_login_url(login_url))
-    end
+    config = { :cas_base_url => @domain_root_account.account_authorization_config.auth_base }
+    cas_client ||= CASClient::Client.new(config)
+    delegated_auth_redirect(cas_client.add_service_to_login_url(cas_login_url))
   end
 
-  def initiate_saml_login(preferred_account_domain=nil)
+  def initiate_saml_login(current_host=nil, aac=nil)
     reset_session_for_login
-    settings = @domain_root_account.account_authorization_config.saml_settings(preferred_account_domain)
-    request = Onelogin::Saml::AuthRequest.create(settings)
-    delegated_auth_redirect(request)
+    aac ||= @domain_root_account.account_authorization_config
+    settings = aac.saml_settings(current_host)
+    request = Onelogin::Saml::AuthRequest.new(settings)
+    forward_url = request.generate_request
+    if aac.debugging? && !aac.debug_get(:request_id)
+      aac.debug_set(:request_id, request.id)
+      aac.debug_set(:to_idp_url, forward_url)
+      aac.debug_set(:to_idp_xml, request.request_xml)
+      aac.debug_set(:debugging, "Forwarding user to IdP for authentication")
+    end
+    delegated_auth_redirect(forward_url)
   end
 
   def delegated_auth_redirect(uri)
-    redirect_to(uri)
+    redirect_to(delegated_auth_redirect_uri(uri))
+  end
+
+  def delegated_auth_redirect_uri(uri)
+    uri
   end
 
   # if true, the user is currently stepping through the oauth2 flow for the canvas api

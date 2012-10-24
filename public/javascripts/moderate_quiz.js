@@ -16,10 +16,22 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-var moderation;
+define([
+  'i18n!quizzes.moderate',
+  'jquery' /* $ */,
+  'quiz_timing',
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_date_and_time' /* parseFromISO */,
+  'jquery.instructure_forms' /* fillFormData, getFormData */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags */,
+  'jquery.instructure_misc_plugins' /* showIf */,
+  'compiled/jquery.rails_flash_notifications',
+  'jquery.templateData' /* fillTemplateData */,
+  'vendor/date' /* Date.parse */
+], function(I18n, $, timing) {
 
-I18n.scoped('quizzes.moderate', function(I18n) {
-  moderation = {
+  window.moderation = {
     updateTimes: function() {
       var now = new Date();
       moderation.studentsCurrentlyTakingQuiz = !!$("#students .student.in_progress");
@@ -180,11 +192,10 @@ I18n.scoped('quizzes.moderate', function(I18n) {
       $("#moderate_student_form").data('ids', student_ids);
       $("#moderate_student_dialog h2").text(I18n.t('extensions_for_students', {'one': "Extensions for 1 Student", 'other': "Extensions for %{count} Students"}, {'count': student_ids.length}));
       $("#moderate_student_form").fillFormData(data);
-      $("#moderate_student_dialog").dialog('close').dialog({
-        auotOpen: false,
+      $("#moderate_student_dialog").dialog({
         title: I18n.t('titles.student_extensions', "Student Extensions"),
         width: 400
-      }).dialog('open');
+      });
     });
 
     $(".moderate_student_link").live('click', function(event) {
@@ -200,11 +211,10 @@ I18n.scoped('quizzes.moderate', function(I18n) {
       $("#moderate_student_form").data('ids', [$student.attr('data-user-id')]);
       $("#moderate_student_form").find("button").attr('disabled', false);
       $("#moderate_student_dialog h2").text(I18n.t('extensions_for_student', "Extensions for %{student}", {'student': name}));
-      $("#moderate_student_dialog").dialog('close').dialog({
-        auotOpen: false,
+      $("#moderate_student_dialog").dialog({
         title: I18n.t('titles.student_extensions', "Student Extensions"),
         width: 400
-      }).dialog('open');
+      });
     });
     $(".reload_link").click(function(event) {
       event.preventDefault();
@@ -264,11 +274,10 @@ I18n.scoped('quizzes.moderate', function(I18n) {
         }
       });
       $dialog.find("button").attr('disabled', false);
-      $dialog.dialog('close').dialog({
-        auto_open: false,
+      $dialog.dialog({
         title: I18n.t('titles.extend_quiz_time', "Extend Quiz Time"),
         width: 400
-      }).dialog('open');
+      });
     });
     $("#extend_time_dialog").find(".cancel_button").click(function() {
       $("#extend_time_dialog").dialog('close');

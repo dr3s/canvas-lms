@@ -19,8 +19,8 @@ module CC
   class CCExporter
     ZIP_DIR = 'zip_dir'
     
-    attr_accessor :course, :user, :export_dir, :manifest, :zip_file
-    delegate :add_error, :to => :@content_export, :allow_nil => true
+    attr_accessor :course, :user, :export_dir, :manifest, :zip_file, :for_course_copy
+    delegate :add_error, :add_item_to_export, :to => :@content_export, :allow_nil => true
 
     def initialize(content_export, opts={})
       @content_export = content_export
@@ -32,7 +32,9 @@ module CC
       @zip_name = nil
       @logger = Rails.logger
       @migration_config = Setting.from_config('external_migration')
-      @migration_config ||= {:keep_after_complete => false} 
+      @migration_config ||= {:keep_after_complete => false}
+      @for_course_copy = opts[:for_course_copy]
+      @qti_only_export = @content_export && @content_export.qti_export?
     end
 
     def self.export(content_export, opts={})
@@ -44,7 +46,11 @@ module CC
       begin
         create_export_dir
         create_zip_file
-        @manifest = Manifest.new(self)
+        if @qti_only_export
+          @manifest = CC::QTI::QTIManifest.new(self)
+        else
+          @manifest = Manifest.new(self)
+        end
         @manifest.create_document
         @manifest.close
         copy_all_to_zip
@@ -73,6 +79,10 @@ module CC
       end
       true
     end
+
+    def referenced_files
+      @manifest ? @manifest.referenced_files : {}
+    end
     
     def set_progress(progress)
       @content_export.fast_update_progress(progress) if @content_export  
@@ -84,6 +94,10 @@ module CC
     
     def export_id
       @content_export ? @content_export.id : nil
+    end
+
+    def export_object?(obj)
+      @content_export ? @content_export.export_object?(obj) : true
     end
     
     private
@@ -116,7 +130,11 @@ module CC
     end
 
     def create_zip_file
-      @zip_name = "#{@course.name.to_url}-export.#{CCHelper::CC_EXTENSION}"
+      if @qti_only_export
+        @zip_name = "#{@course.name.to_url}-quiz-export.zip"
+      else
+        @zip_name = "#{@course.name.to_url}-export.#{CCHelper::CC_EXTENSION}"
+      end
       FileUtils::mkdir_p File.join(@export_dir, ZIP_DIR)
       @zip_path = File.join(@export_dir, ZIP_DIR, @zip_name)
       @zip_file = Zip::ZipFile.new(@zip_path, Zip::ZipFile::CREATE)

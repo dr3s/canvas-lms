@@ -19,6 +19,7 @@ class Converter < Canvas::Migration::Migrator
     @converted = false
     @dest_dir_2_1 = nil
     @course[:hidden_folders] = [MigratorHelper::QUIZ_FILE_DIRECTORY]
+    @flavor = settings[:flavor]
   end
 
   def export
@@ -33,7 +34,7 @@ class Converter < Canvas::Migration::Migrator
 
     convert_files
     path_map = @course[:file_map].values.inject({}){|h, v| h[v[:path_name]] = v[:migration_id]; h }
-    @course[:assessment_questions] = convert_questions(:file_path_map => path_map)
+    @course[:assessment_questions] = convert_questions(:file_path_map => path_map, :flavor => @flavor)
     @course[:assessments] = convert_assessments(@course[:assessment_questions][:assessment_questions])
     @course[:files_import_root_path] = unique_quiz_dir
 
@@ -41,7 +42,7 @@ class Converter < Canvas::Migration::Migrator
       apply_respondus_settings
     end
 
-    @course['all_files_zip'] = package_course_files
+    @course['all_files_zip'] = package_course_files(@dest_dir_2_1)
     save_to_file
     delete_unzipped_archive
     @course
@@ -58,7 +59,7 @@ class Converter < Canvas::Migration::Migrator
 
   def run_qti_converter
     # convert to 2.1
-    @dest_dir_2_1 = File.join(@unzipped_file_path, QTI_2_OUTPUT_PATH)
+    @dest_dir_2_1 = Dir.mktmpdir(QTI_2_OUTPUT_PATH)
     command = Qti.get_conversion_command(@dest_dir_2_1, @unzipped_file_path)
     logger.debug "Running migration command: #{command}"
     python_std_out = `#{command}`
@@ -92,7 +93,7 @@ class Converter < Canvas::Migration::Migrator
     raise "The QTI must be converted to 2.1 before converting to JSON" unless @converted
     begin
       manifest_file = File.join(@dest_dir_2_1, MANIFEST_FILE)
-      @quizzes[:assessments] = Qti.convert_assessments(manifest_file, :converted_questions => questions)
+      @quizzes[:assessments] = Qti.convert_assessments(manifest_file, @settings.merge({:converted_questions => questions}))
     rescue => e
       message = "Error processing assessment QTI data: #{$!}: #{$!.backtrace.join("\n")}"
       add_error "qti_assessments", message, @questions, e
@@ -106,6 +107,7 @@ class Converter < Canvas::Migration::Migrator
       manifest_file = File.join(@dest_dir_2_1, MANIFEST_FILE)
       Qti.convert_files(manifest_file).each do |attachment|
         mig_id = Digest::MD5.hexdigest(attachment)
+        mig_id = prepend_id(mig_id) if id_prepender
         @course[:file_map][mig_id] = {
           :migration_id => mig_id,
           :path_name => attachment,

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2012 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -24,18 +24,20 @@ class Quiz < ActiveRecord::Base
   include CopyAuthorizedLinks
   include ActionView::Helpers::SanitizeHelper
   extend ActionView::Helpers::SanitizeHelper::ClassMethods
+  include ContextModuleItem
+
   attr_accessible :title, :description, :points_possible, :assignment_id, :shuffle_answers,
     :show_correct_answers, :time_limit, :allowed_attempts, :scoring_policy, :quiz_type,
     :lock_at, :unlock_at, :due_at, :access_code, :anonymous_submissions, :assignment_group_id,
     :hide_results, :locked, :ip_filter, :require_lockdown_browser,
-    :require_lockdown_browser_for_results, :context
+    :require_lockdown_browser_for_results, :context, :notify_of_update
 
   attr_readonly :context_id, :context_type
+  attr_accessor :notify_of_update
   
   has_many :quiz_questions, :dependent => :destroy, :order => 'position'
   has_many :quiz_submissions, :dependent => :destroy
   has_many :quiz_groups, :dependent => :destroy, :order => 'position'
-  has_one :context_module_tag, :as => :content, :class_name => 'ContentTag', :conditions => ['content_tags.tag_type = ? AND workflow_state != ?', 'context_module', 'deleted'], :include => {:context_module => [:context_module_progressions, :content_tags]}
   belongs_to :context, :polymorphic => true
   belongs_to :assignment
   belongs_to :cloned_item
@@ -206,7 +208,15 @@ class Quiz < ActiveRecord::Base
   def ungraded?
     !self.graded?
   end
-  
+
+  # Determine if the quiz should display the correct answers.
+  # Takes into account the quiz settings, the user viewing and
+  # the submission to be viewed.
+  def display_correct_answers?(user, submission)
+    # NOTE: We don't have a submission user when the teacher is previewing the quiz and displaying the results'
+    self.show_correct_answers || (self.grants_right?(user, nil, :grade) && (submission && submission.user && submission.user != user))
+  end
+
   def update_existing_submissions
     # If the quiz suddenly changes from non-graded to graded,
     # then this will update the existing submissions to reflect quiz
@@ -217,12 +227,17 @@ class Quiz < ActiveRecord::Base
   attr_accessor :saved_by
   def update_assignment
     send_later_if_production(:set_unpublished_question_count) if self.id
-    if !self.assignment_id && @old_assignment_id && self.context_module_tag
-      self.context_module_tag.confirm_valid_module_requirements
+    if !self.assignment_id && @old_assignment_id
+      self.context_module_tags.each { |tag| tag.confirm_valid_module_requirements }
     end
     if !self.graded? && (@old_assignment_id || self.last_assignment_id)
       Assignment.update_all({:workflow_state => 'deleted', :updated_at => Time.now.utc}, {:id => [@old_assignment_id, self.last_assignment_id].compact, :submission_types => 'online_quiz'})
-      self.quiz_submissions.each { |q| q.submission.try(:destroy); q.submission = nil; q.save! }
+      self.quiz_submissions.each do |qs|
+        submission = qs.submission
+        qs.submission = nil
+        qs.save! if qs.changed?
+        submission.try(:destroy)
+      end
       ContentTag.delete_for(Assignment.find(@old_assignment_id)) if @old_assignment_id
       ContentTag.delete_for(Assignment.find(self.last_assignment_id)) if self.last_assignment_id
     end
@@ -242,8 +257,9 @@ class Quiz < ActiveRecord::Base
         a.assignment_group_id = self.assignment_group_id
         a.saved_by = :quiz
         a.workflow_state = 'available' if a.deleted?
+        a.notify_of_update = @notify_of_update
         a.with_versioning(false) do
-          a.save
+          @notify_of_update ? a.save : a.save_without_broadcasting!
         end
         self.assignment_id = a.id
         Quiz.update_all({:assignment_id => a.id}, {:id => self.id})
@@ -251,7 +267,37 @@ class Quiz < ActiveRecord::Base
     end
   end
   protected :update_assignment
-  
+
+  ##
+  # when a quiz is updated, this method should be called to update the end_at
+  # of all open quiz submissions. this ensures that students who are taking the
+  # quiz when the time_limit is updated get the additional time added.
+  def update_quiz_submission_end_at_times
+    new_end_at = time_limit * 60.0
+
+    update_sql = case ActiveRecord::Base.connection.adapter_name.downcase
+                 when /postgres/
+                   "started_at + INTERVAL '+? seconds'"
+                 when /mysql/
+                   "started_at + INTERVAL ? SECOND"
+                 when /sqlite/
+                   "DATETIME(started_at, '+? seconds')"
+                 end
+
+    # only update quiz submissions that:
+    # 1. belong to this quiz;
+    # 2. haven't been started; and
+    # 3. won't lose time through this change.
+    where_clause = <<-END
+      quiz_id = ? AND
+      started_at IS NOT NULL AND
+      finished_at IS NULL AND
+      #{update_sql} > end_at
+    END
+
+    QuizSubmission.update_all(["end_at = #{update_sql}", new_end_at], [where_clause, self.id, new_end_at]);
+  end
+
   workflow do
     state :created do
       event :did_edit, :transitions_to => :edited
@@ -291,7 +337,7 @@ class Quiz < ActiveRecord::Base
           data[:assessment_question_bank_id] = e.assessment_question_bank_id
           data[:questions] = []
         else
-          data[:questions] = e.quiz_questions.map{|q| q.data}
+          data[:questions] = e.quiz_questions.sort_by{|q| q.position || 99999}.map(&:data)
         end
         data[:actual_pick_count] = e.actual_pick_count
         res = data
@@ -374,7 +420,7 @@ class Quiz < ActiveRecord::Base
       variables.each do |variable|
         variable_id = AssessmentQuestion.variable_id(variable)
         re = Regexp.new("\\[#{variable}\\]")
-        text = text.sub(re, "<input class='question_input' type='text' style='width: 120px;' name='question_#{q[:id]}_#{variable_id}' value='{{question_#{q[:id]}_#{variable_id}}}' />")
+        text = text.sub(re, "<input class='question_input' type='text' autocomplete='off' style='width: 120px;' name='question_#{q[:id]}_#{variable_id}' value='{{question_#{q[:id]}_#{variable_id}}}' />")
       end
       q[:original_question_text] = q[:question_text]
       q[:question_text] = text
@@ -486,7 +532,8 @@ class Quiz < ActiveRecord::Base
     submission.end_at = submission.started_at + (self.time_limit.to_f * 60.0) if self.time_limit
     # Admins can take the full quiz whenever they want
     unless user.is_a?(User) && self.grants_right?(user, nil, :grade)
-      submission.end_at = self.due_at if self.due_at && Time.now < self.due_at && (!submission.end_at || self.due_at < submission.end_at)
+      submission.end_at = due_at if due_at && Time.now < due_at && (!submission.end_at || due_at < submission.end_at)
+      submission.end_at = lock_at if lock_at && !submission.manually_unlocked && (!submission.end_at || lock_at < submission.end_at)
     end
     submission.end_at += (submission.extra_time * 60.0) if submission.end_at && submission.extra_time
     submission.finished_at = nil
@@ -550,9 +597,8 @@ class Quiz < ActiveRecord::Base
   alias_method :to_s, :quiz_title
   
   def locked_for?(user=nil, opts={})
-    @locks ||= {}
     return false if opts[:check_policies] && self.grants_right?(user, nil, :update)
-    @locks[user ? user.id : 0] ||= Rails.cache.fetch(locked_cache_key(user), :expires_in => 1.minute) do
+    Rails.cache.fetch(locked_cache_key(user), :expires_in => 1.minute) do
       locked = false
       if (self.unlock_at && self.unlock_at > Time.now)
         sub = user && quiz_submissions.find_by_user_id(user.id)
@@ -569,10 +615,10 @@ class Quiz < ActiveRecord::Base
         if !sub || !sub.manually_unlocked
           locked = l
         end
-      elsif (self.context_module_tag && !self.context_module_tag.available_for?(user, opts[:deep_check_if_needed]))
+      elsif item = locked_by_module_item?(user, opts[:deep_check_if_needed])
         sub = user && quiz_submissions.find_by_user_id(user.id)
         if !sub || !sub.manually_unlocked
-          locked = {:asset_string => self.asset_string, :context_module => self.context_module_tag.context_module.attributes}
+          locked = {:asset_string => self.asset_string, :context_module => item.context_module.attributes}
         end
       end
       locked
@@ -580,8 +626,11 @@ class Quiz < ActiveRecord::Base
   end
   
   def context_module_action(user, action, points=nil)
-    self.context_module_tag.context_module_action(user, action, points) if self.context_module_tag
-    self.assignment.context_module_tag.context_module_action(user, action, points) if self.assignment && self.assignment.context_module_tag
+    tags_to_update = self.context_module_tags.to_a
+    if self.assignment
+      tags_to_update += self.assignment.context_module_tags
+    end
+    tags_to_update.each { |tag| tag.context_module_action(user, action, points) }
   end
 
   # virtual attribute
@@ -733,20 +782,38 @@ class Quiz < ActiveRecord::Base
     dup.clone_updated = true
     dup
   end
+
+  def strip_html_answers(question)
+    return if !question || !question[:answers] || !(%w(multiple_choice_question multiple_answers_question).include? question[:question_type])
+    for answer in question[:answers] do
+      answer[:text] = strip_tags(answer[:html]) if !answer[:html].blank? && answer[:text].blank?
+    end
+  end
+
+  def submissions_for_statistics(include_all_versions=true)
+    for_users = self.context.students.map(&:id)
+    self.quiz_submissions.scoped(:include => [:versions], :conditions => { :user_id => for_users }).
+      map { |qs| if include_all_versions then qs.submitted_versions else qs.latest_submitted_version end }.
+      flatten.
+      compact.
+      select{ |s| s.completed? && s.submission_data.is_a?(Array) }.
+      sort_by(&:updated_at).
+      reverse
+  end
   
   def statistics_csv(options={})
     options ||= {}
     columns = []
     columns << t('statistics.csv_columns.name', 'name') unless options[:anonymous]
-    columns << t('statistics.csv_columns.id', 'id')
+    columns << t('statistics.csv_columns.id', 'id') unless options[:anonymous]
+    columns << t('statistics.csv_columns.sis_id', 'sis_id') unless options[:anonymous]
+    columns << t('statistics.csv_columns.section', 'section')
+    columns << t('statistics.csv_columns.section_id', 'section_id')
+    columns << t('statistics.csv_columns.section_sis_id', 'section_sis_id')
     columns << t('statistics.csv_columns.submitted', 'submitted')
     columns << t('statistics.csv_columns.attempt', 'attempt') if options[:include_all_versions]
     first_question_index = columns.length
-    submissions = self.quiz_submissions.scoped(:include => (options[:include_all_versions] ? [:versions] : [])).select{|s| s.completed? && s.submission_data.is_a?(Array) && self.context.students.map(&:id).include?(s.user_id) }
-    if options[:include_all_versions]
-      submissions = submissions.map(&:submitted_versions).flatten
-    end
-    submissions = submissions.sort_by(&:updated_at).reverse
+    submissions = submissions_for_statistics(options[:include_all_versions])
     found_question_ids = {}
     quiz_datas = [quiz_data] + submissions.map(&:quiz_data)
     quiz_datas.each do |quiz_data|
@@ -767,7 +834,19 @@ class Quiz < ActiveRecord::Base
     submissions.each do |submission|
       row = []
       row << submission.user.name unless options[:anonymous]
-      row << submission.user_id
+      row << submission.user_id unless options[:anonymous]
+      row << submission.user.sis_pseudonym_for(context.account).try(:sis_user_id) unless options[:anonymous]
+      section_name = []
+      section_id = []
+      section_sis_id = []
+      enrollments = submission.quiz.context.student_enrollments.active.where(:user_id => submission.user_id).each do |enrollment|
+        section_name << enrollment.course_section.name
+        section_id << enrollment.course_section.id
+        section_sis_id << enrollment.course_section.try(:sis_source_id)
+      end
+      row << section_name.join(", ")
+      row << section_id.join(", ")
+      row << section_sis_id.join(", ")
       row << submission.finished_at
       row << submission.attempt if options[:include_all_versions]
       columns[first_question_index..last_question_index].each do |id|
@@ -781,11 +860,12 @@ class Quiz < ActiveRecord::Base
           row << ''
           next
         end
-        answer_item = question && question[:answers].detect{|a| a[:id].to_s == answer[:text] }
+        strip_html_answers(question)
+        answer_item = question && question[:answers].detect{|a| a[:id] == answer[:answer_id]}
         answer_item ||= answer
         if question[:question_type] == 'fill_in_multiple_blanks_question'
           blank_ids = question[:answers].map{|a| a[:blank_id] }.uniq
-          row << blank_ids.map{|blank_id| answer["answer_for_#{blank_id}".to_sym].gsub(/,/, '\,') }.join(',')
+          row << blank_ids.map{|blank_id| answer["answer_for_#{blank_id}".to_sym].try(:gsub, /,/, '\,') }.compact.join(',')
         elsif question[:question_type] == 'multiple_answers_question'
           row << question[:answers].map{|a| answer["answer_#{a[:id]}".to_sym] == '1' ? a[:text].gsub(/,/, '\,') : nil }.compact.join(',')
         elsif question[:question_type] == 'multiple_dropdowns_question'
@@ -830,12 +910,7 @@ class Quiz < ActiveRecord::Base
   end
 
   def statistics(include_all_versions=true)
-    submissions = self.quiz_submissions.scoped(:include => (include_all_versions ? [:versions] : [])).select{|s| self.context.students.map(&:id).include?(s.user_id) }
-    if include_all_versions
-      submissions = submissions.map(&:submitted_versions).flatten
-    end
-    submissions = submissions.select{|s| s.completed? && s.submission_data.is_a?(Array) }
-    submissions = submissions.sort_by(&:updated_at).reverse
+    submissions = submissions_for_statistics(include_all_versions)
     questions = (self.quiz_data || []).map{|q| q[:questions] ? q[:questions] : [q] }.flatten
     stats = {}
     found_ids = {}
@@ -864,8 +939,8 @@ class Quiz < ActiveRecord::Base
       points = answers.map{|a| a[:points] }.sum
       score_counter << points
       stats[:submission_score_tally] += points
-      stats[:submission_incorrect_tally] += answers.select{|a| a[:correct] == false }.length
-      stats[:submission_correct_tally] += answers.select{|a| a[:correct] == true }.length
+      stats[:submission_incorrect_tally] += answers.count{|a| a[:correct] == false }
+      stats[:submission_correct_tally] += answers.count{|a| a[:correct] == true }
       stats[:submission_duration_tally] += ((sub.finished_at - sub.started_at).to_i rescue 30)
       sub.quiz_data.each do |question|
         question_ids << question[:id]
@@ -908,6 +983,7 @@ class Quiz < ActiveRecord::Base
       answer[:user_ids] = []
       answer
     }
+    strip_html_answers(res)
     res[:multiple_responses] = true if question[:question_type] == 'calculated_question'
     if question[:question_type] == 'numerical_question'
       res[:answers].each do |answer|
@@ -949,7 +1025,7 @@ class Quiz < ActiveRecord::Base
     end
     submissions.each do |submission|
       answers = submission.submission_data || []
-      response = answers.select{|a| a[:question_id] == question[:id] }.first
+      response = answers.detect{|a| a[:question_id] == question[:id] }
       if response
         res[:responses] += 1
         res[:response_values] << response[:text]
@@ -1082,10 +1158,9 @@ class Quiz < ActiveRecord::Base
 
   def self.process_migration(data, migration, question_data)
     assessments = data['assessments'] ? data['assessments']['assessments'] : []
-    to_import = migration.to_import 'quizzes'
     assessments.each do |assessment|
       migration_id = assessment['migration_id'] || assessment['assessment_id']
-      if migration_id && (!to_import || to_import[migration_id])
+      if migration.import_object?("quizzes", migration_id)
         allow_update = false
         # allow update if we find an existing item based on this migration setting
         if item_id = migration.migration_settings[:quiz_id_to_update]
@@ -1096,6 +1171,7 @@ class Quiz < ActiveRecord::Base
           end
         end
         begin
+          assessment[:migration] = migration
           Quiz.import_from_migration(assessment, migration.context, question_data, nil, allow_update)
         rescue
           migration.add_warning(t('warnings.import_from_migration_failed', "Couldn't import the quiz \"%{quiz_title}\"", :quiz_title => assessment[:title]), $!)
@@ -1111,7 +1187,13 @@ class Quiz < ActiveRecord::Base
     # there might not be an import id if it's just a text-only type...
     item ||= find_by_context_type_and_context_id_and_id(context.class.to_s, context.id, hash[:id]) if hash[:id]
     item ||= find_by_context_type_and_context_id_and_migration_id(context.class.to_s, context.id, hash[:migration_id]) if hash[:migration_id]
-    return if item && !allow_update
+    if item && !allow_update
+      if item.deleted?
+        item.workflow_state = hash[:available] ? 'available' : 'created'
+        item.save
+      end
+      return
+    end
     item ||= context.quizzes.new
 
     hash[:due_at] ||= hash[:due_date]
@@ -1121,7 +1203,7 @@ class Quiz < ActiveRecord::Base
     item.due_at = Canvas::Migration::MigratorHelper.get_utc_time_from_timestamp(hash[:due_at]) if hash[:due_at]
     item.scoring_policy = hash[:which_attempt_to_keep] if hash[:which_attempt_to_keep]
     item.description = ImportedHtmlConverter.convert(hash[:description], context)
-    [:migration_id, :title, :allowed_attempts, :time_limit, 
+    [:migration_id, :title, :allowed_attempts, :time_limit,
      :shuffle_answers, :show_correct_answers, :points_possible, :hide_results,
      :access_code, :ip_filter, :scoring_policy, :require_lockdown_browser,
      :require_lockdown_browser_for_results, :anonymous_submissions, 
@@ -1141,11 +1223,11 @@ class Quiz < ActiveRecord::Base
               if qq[:assessment_question_migration_id]
                 if aq = question_data[:aq_data][qq[:assessment_question_migration_id]]
                   qq['assessment_question_id'] = aq['assessment_question_id']
-                  AssessmentQuestion.prep_for_import(qq, context)
-                  QuizQuestion.import_from_migration(qq, context, item)
+                  aq_hash = AssessmentQuestion.prep_for_import(qq, context)
+                  QuizQuestion.import_from_migration(aq_hash, context, item)
                 else
-                  AssessmentQuestion.import_from_migration(qq, context)
-                  QuizQuestion.import_from_migration(qq, context, item)
+                  aq_hash = AssessmentQuestion.import_from_migration(qq, context)
+                  QuizQuestion.import_from_migration(aq_hash, context, item)
                 end
               end
             elsif aq = question_data[:aq_data][question[:migration_id]]
@@ -1154,7 +1236,7 @@ class Quiz < ActiveRecord::Base
               QuizQuestion.import_from_migration(aq, context, item)
             end
           when "question_group"
-            QuizGroup.import_from_migration(question, context, item, question_data, i + 1)
+            QuizGroup.import_from_migration(question, context, item, question_data, i + 1, hash[:migration])
           when "text_only_question"
             qq = item.quiz_questions.new
             qq.question_data = question
@@ -1168,13 +1250,16 @@ class Quiz < ActiveRecord::Base
     if hash[:assignment] && hash[:available]
       assignment = Assignment.import_from_migration(hash[:assignment], context)
       item.assignment = assignment
-      item.generate_quiz_data
-      item.workflow_state = 'available'
-      item.published_at = Time.now
     elsif !item.assignment && grading = hash[:grading]
       # The actual assignment will be created when the quiz is published
       item.quiz_type = 'assignment'
-      hash[:assignment_group_migration_id] ||= grading[:assignment_group_migration_id] 
+      hash[:assignment_group_migration_id] ||= grading[:assignment_group_migration_id]
+    end
+
+    if hash[:available]
+      item.generate_quiz_data
+      item.workflow_state = 'available'
+      item.published_at = Time.now
     end
     
     if hash[:assignment_group_migration_id]
@@ -1235,4 +1320,18 @@ class Quiz < ActiveRecord::Base
       end
     end
   end
+
+  def self.lockdown_browser_plugin_enabled?
+    Canvas::Plugin.all_for_tag(:lockdown_browser).any? { |p| p.settings[:enabled] }
+  end
+
+  def require_lockdown_browser
+    self[:require_lockdown_browser] && Quiz.lockdown_browser_plugin_enabled?
+  end
+  alias :require_lockdown_browser? :require_lockdown_browser
+
+  def require_lockdown_browser_for_results
+    self[:require_lockdown_browser_for_results] && Quiz.lockdown_browser_plugin_enabled?
+  end
+  alias :require_lockdown_browser_for_results? :require_lockdown_browser_for_results
 end

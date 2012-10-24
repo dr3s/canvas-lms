@@ -47,8 +47,10 @@
 //  * famspam.com/facebox
 // =======================================================================
 
-(function($) {
-  
+define([
+  'jquery' /* jQuery, $ */
+], function($) {
+
   var FALSE = !1
     , TRUE = !FALSE
     , NAMESPACE = '.pageless'
@@ -214,4 +216,4 @@
     return this;
   };
   
-})(jQuery);
+});

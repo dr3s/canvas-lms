@@ -28,23 +28,30 @@ module CC
     include WebLinks
     include BasicLTILinks
     
-    delegate :add_error, :set_progress, :to => :@manifest
+    delegate :add_error, :set_progress, :export_object?, :for_course_copy, :add_item_to_export, :to => :@manifest
+    delegate :referenced_files, :to => :@html_exporter
 
     def initialize(manifest, manifest_node)
       @manifest = manifest
       @manifest_node = manifest_node
       @course = @manifest.course
+      @user = @manifest.user
       @export_dir = @manifest.export_dir
       @resources = nil
       @zip_file = manifest.zip_file
       # if set to "flash video", this'll export the smaller, post-conversion
       # flv files rather than the larger original files.
-      @html_exporter = CCHelper::HtmlContentExporter.new(@course, @manifest.exporter.user, :media_object_flavor => Setting.get('exporter_media_object_flavor', nil).presence)
+      @html_exporter = CCHelper::HtmlContentExporter.new(@course,
+                                                         @manifest.exporter.user,
+                                                         :for_course_copy => for_course_copy,
+                                                         :track_referenced_files => true,
+                                                         :media_object_flavor => Setting.get('exporter_media_object_flavor', nil).presence)
     end
     
     def self.create_resources(manifest, manifest_node)
       r = new(manifest, manifest_node)
       r.create_resources
+      r
     end
     
     def create_resources
@@ -69,7 +76,7 @@ module CC
         run_and_set_progress(:create_basic_lti_links, 91, I18n.t('course_exports.errors.lti_links', "Failed to export some web links"))
       end
     end
-    
+
     def run_and_set_progress(method, progress, fail_message, *args)
       res = nil
       begin

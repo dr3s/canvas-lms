@@ -20,6 +20,14 @@ module Delayed
         include Delayed::Backend::Base
         set_table_name :delayed_jobs
 
+        def self.reconnect!
+          connection.reconnect!
+        end
+
+        class << self
+          attr_accessor :batch_size, :select_random
+        end
+
         # be aware that some strand functionality is controlled by triggers on
         # the database. see
         # db/migrate/20110831210257_add_delayed_jobs_next_in_strand.rb
@@ -37,16 +45,12 @@ module Delayed
         # this means that deleting the first job from a strand from
         # outside rails is *not* safe when using mysql for the queue.
         after_destroy :update_strand_on_destroy
-        cattr_accessor :adapter_name
         def update_strand_on_destroy
-          if adapter_name.nil?
-            self.class.adapter_name = connection.adapter_name
-          end
-          if strand.present? && next_in_strand? && adapter_name == 'MySQL'
+          if strand.present? && next_in_strand? && self.class.connection.adapter_name == 'MySQL'
             # this funky sub-sub-select is to force mysql to create a temporary
             # table, otherwise it fails complaining that you can't select from
             # the same table you are updating
-            self.class.execute_with_sanitize(["UPDATE delayed_jobs SET next_in_strand = 1 WHERE id = (SELECT _id.id FROM (SELECT id FROM delayed_jobs j2 WHERE j2.strand = ? ORDER BY j2.strand, j2.id ASC LIMIT 1) AS _id)", strand])
+            connection.execute(sanitize_sql(["UPDATE delayed_jobs SET next_in_strand = 1 WHERE id = (SELECT _id.id FROM (SELECT id FROM delayed_jobs j2 WHERE j2.strand = ? ORDER BY j2.strand, j2.id ASC LIMIT 1) AS _id)", strand]))
           end
         end
 
@@ -55,16 +59,10 @@ module Delayed
         # to raise the lock level
         before_create :lock_strand_on_create
         def lock_strand_on_create
-          if adapter_name.nil?
-            self.class.adapter_name = connection.adapter_name
-          end
-          if strand.present? && adapter_name == 'PostgreSQL'
-            connection.execute("LOCK delayed_jobs IN SHARE ROW EXCLUSIVE MODE")
+          if strand.present? && self.class.connection.adapter_name == 'PostgreSQL'
+            connection.execute(sanitize_sql(["SELECT pg_advisory_xact_lock(half_md5_as_bigint(?))", strand]))
           end
         end
-
-        cattr_accessor :default_priority
-        self.default_priority = Delayed::NORMAL_PRIORITY
 
         named_scope :current, lambda {
           { :conditions => ["run_at <= ?", db_time_now] }
@@ -83,7 +81,7 @@ module Delayed
         # 500.times { |i| "ohai".send_later_enqueue_args(:reverse, { :run_at => (12.hours.ago + (rand(24.hours.to_i))) }) }
         # then fire up your workers
         # you can check out strand correctness: diff test1.txt <(sort -n test1.txt)
-        named_scope :ready_to_run, lambda {|worker_name, max_run_time|
+        named_scope :ready_to_run, lambda {
           { :conditions => ["run_at <= ? AND locked_at IS NULL AND next_in_strand = ?", db_time_now, true] }
         }
         named_scope :by_priority, :order => 'priority ASC, run_at ASC'
@@ -97,54 +95,193 @@ module Delayed
           update_all("locked_by = null, locked_at = null", ["locked_by <> 'on hold' AND locked_at < ?", db_time_now - max_run_time])
         end
 
+        def self.strand_size(strand)
+          self.scoped(:conditions => { :strand => strand }).count
+        end
+
+        def self.running_jobs()
+          self.running.scoped(:order => "locked_at asc")
+        end
+
+        def self.scope_for_flavor(flavor, query)
+          scope = case flavor.to_s
+          when 'current'
+            self.current
+          when 'future'
+            self.future
+          when 'failed'
+            Delayed::Job::Failed
+          when 'strand'
+            self.scoped(:conditions => { :strand => query })
+          when 'tag'
+            self.scoped(:conditions => { :tag => query })
+          else
+            raise ArgumentError, "invalid flavor: #{flavor.inspect}"
+          end
+
+          if %w(current future).include?(flavor.to_s)
+            queue = query.presence || Delayed::Worker.queue
+            scope = scope.scoped(:conditions => { :queue => queue })
+          end
+
+          scope
+        end
+
+        # get a list of jobs of the given flavor in the given queue
+        # flavor is :current, :future, :failed, :strand or :tag
+        # depending on the flavor, query has a different meaning:
+        # for :current and :future, it's the queue name (defaults to Delayed::Worker.queue)
+        # for :strand it's the strand name
+        # for :tag it's the tag name
+        # for :failed it's ignored
+        def self.list_jobs(flavor,
+                           limit,
+                           offset = 0,
+                           query = nil)
+          scope = self.scope_for_flavor(flavor, query)
+          order = flavor.to_s == 'future' ? 'run_at' : 'id desc'
+          scope.all(:order => order, :limit => limit, :offset => offset)
+        end
+
+        # get the total job count for the given flavor
+        # see list_jobs for documentation on arguments
+        def self.jobs_count(flavor,
+                            query = nil)
+          scope = self.scope_for_flavor(flavor, query)
+          scope.count
+        end
+
+        # perform a bulk update of a set of jobs
+        # action is :hold, :unhold, or :destroy
+        # to specify the jobs to act on, either pass opts[:ids] = [list of job ids]
+        # or opts[:flavor] = <some flavor> to perform on all jobs of that flavor
+        def self.bulk_update(action, opts)
+          scope = if opts[:flavor]
+            raise("Can't bulk update failed jobs") if opts[:flavor].to_s == 'failed'
+            self.scope_for_flavor(opts[:flavor], opts[:query])
+          elsif opts[:ids]
+            self.scoped(:conditions => { :id => opts[:ids] })
+          end
+
+          return 0 unless scope
+
+          case action.to_s
+          when 'hold'
+            scope.update_all({ :locked_by => ON_HOLD_LOCKED_BY, :locked_at => db_time_now, :attempts => ON_HOLD_COUNT })
+          when 'unhold'
+            now = db_time_now
+            scope.update_all(["locked_by = NULL, locked_at = NULL, attempts = 0, run_at = (CASE WHEN run_at > ? THEN run_at ELSE ? END), failed_at = NULL", now, now])
+          when 'destroy'
+            scope.delete_all
+          end
+        end
+
+        # returns a list of hashes { :tag => tag_name, :count => current_count }
+        # in descending count order
+        # flavor is :current or :all
+        def self.tag_counts(flavor,
+                            limit,
+                            offset = 0)
+          raise(ArgumentError, "invalid flavor: #{flavor}") unless %w(current all).include?(flavor.to_s)
+          scope = case flavor.to_s
+            when 'current'
+              self.current
+            when 'all'
+              self
+            end
+
+          scope.count(:group => 'tag', :limit => limit, :offset => offset, :order => 'count(tag) desc', :select => 'tag').map { |t,c| { :tag => t, :count => c } }
+        end
+
         def self.get_and_lock_next_available(worker_name,
-                                             max_run_time,
-                                             queue = nil,
+                                             queue = Delayed::Worker.queue,
                                              min_priority = nil,
                                              max_priority = nil)
-          @batch_size ||= Setting.get_cached('jobs_get_next_batch_size', '5').to_i
+
+          check_queue(queue)
+          check_priorities(min_priority, max_priority)
+
+          self.batch_size ||= Setting.get_cached('jobs_get_next_batch_size', '5').to_i
+          if self.select_random.nil?
+            self.select_random = Setting.get_cached('jobs_select_random', 'false') == 'true'
+          end
           loop do
-            jobs = Rails.logger.silence do
-              find_available(worker_name, @batch_size, max_run_time, queue, min_priority, max_priority)
-            end
+            jobs = find_available(@batch_size, queue, min_priority, max_priority)
             return nil if jobs.empty?
+            if self.select_random
+              jobs = jobs.sort_by { rand }
+            end
             job = jobs.detect do |job|
-              job.lock_exclusively!(max_run_time, worker_name)
+              job.lock_exclusively!(worker_name)
             end
             return job if job
           end
         end
 
-        def self.find_available(worker_name,
-                                limit,
-                                max_run_time,
-                                queue = nil,
+        def self.find_available(limit,
+                                queue = Delayed::Worker.queue,
                                 min_priority = nil,
                                 max_priority = nil)
-          all_available(worker_name, max_run_time, queue, min_priority, max_priority).all(:limit => limit)
+          all_available(queue, min_priority, max_priority).all(:limit => limit)
         end
 
-        def self.all_available(worker_name,
-                               max_run_time,
-                               queue = nil,
+        def self.all_available(queue = Delayed::Worker.queue,
                                min_priority = nil,
                                max_priority = nil)
-          scope = self.ready_to_run(worker_name, max_run_time)
-          scope = scope.scoped(:conditions => ['priority >= ?', min_priority]) if min_priority
-          scope = scope.scoped(:conditions => ['priority <= ?', max_priority]) if max_priority
-          scope = scope.scoped(:conditions => ['queue = ?', queue]) if queue
-          scope = scope.scoped(:conditions => ['queue is null']) unless queue
+          min_priority ||= Delayed::MIN_PRIORITY
+          max_priority ||= Delayed::MAX_PRIORITY
+
+          check_queue(queue)
+          check_priorities(min_priority, max_priority)
+
+          scope = self.ready_to_run
+          scope = scope.scoped(:conditions => ['priority >= ?', min_priority])
+          scope = scope.scoped(:conditions => ['priority <= ?', max_priority])
+          scope = scope.scoped(:conditions => ['queue = ?', queue])
           scope.by_priority
         end
 
-        # Clear all pending jobs for a specified strand
-        #
-        # Note that it *does* not clear out currently running or held jobs, for
-        # synchronization purposes: If you're using a strand for a "singleton" job,
-        # the currently running instance should complete, before the next instance
-        # starts.
-        def self.clear_strand!(strand_name)
-          self.delete_all(['strand=? AND locked_at IS NULL', strand_name])
+        # used internally by create_singleton to take the appropriate lock
+        # depending on the db driver
+        def self.transaction_for_singleton(strand)
+          case self.connection.adapter_name
+          when 'PostgreSQL'
+            self.transaction do
+              connection.execute(sanitize_sql(["SELECT pg_advisory_xact_lock(half_md5_as_bigint(?))", strand]))
+              yield
+            end
+          when 'MySQL'
+            self.transaction do
+              begin
+                connection.execute("LOCK TABLES #{table_name} WRITE")
+                yield
+              ensure
+                connection.execute("UNLOCK TABLES")
+              end
+            end
+          when 'SQLite'
+            # can't use BEGIN EXCLUSIVE TRANSACTION here, since we might already be in a txn
+            self.transaction do
+              begin
+                connection.execute("PRAGMA locking_mode = EXCLUSIVE")
+                yield
+              ensure
+                connection.execute("PRAGMA locking_mode = NORMAL")
+              end
+            end
+          end
+        end
+
+        # Create the job on the specified strand, but only if there aren't any
+        # other non-running jobs on that strand.
+        # (in other words, the job will still be created if there's another job
+        # on the strand but it's already running)
+        def self.create_singleton(options)
+          strand = options[:strand]
+          transaction_for_singleton(strand) do
+            job = self.first(:conditions => ["strand = ? AND locked_at IS NULL", strand], :order => :id)
+            job || self.create(options)
+          end
         end
 
         # Lock this job for this worker.
@@ -153,24 +290,32 @@ module Delayed
         # It's important to note that for performance reasons, this method does
         # not re-check the strand constraints -- so you could manually lock a
         # job using this method that isn't the next to run on its strand.
-        def lock_exclusively!(max_run_time, worker)
+        def lock_exclusively!(worker)
           now = self.class.db_time_now
           # We don't own this job so we will update the locked_by name and the locked_at
-          affected_rows = Rails.logger.silence do
-            self.class.update_all(["locked_at = ?, locked_by = ?", now, worker], ["id = ? and locked_at is null and run_at <= ?", id, now])
-          end
+          affected_rows = self.class.update_all(["locked_at = ?, locked_by = ?", now, worker], ["id = ? and locked_at is null and run_at <= ?", id, now])
           if affected_rows == 1
-            self.locked_at    = now
-            self.locked_by    = worker
-            # we cheated ActiveRecord::Dirty with the update_all calls above, so
-            # we'll fix things up here.
-            changed_attributes['locked_at'] = now
-            changed_attributes['locked_by'] = worker
-
+            mark_as_locked!(now, worker)
             return true
           else
             return false
           end
+        end
+
+        def mark_as_locked!(time, worker)
+          self.locked_at    = time
+          self.locked_by    = worker
+          # we cheated ActiveRecord::Dirty with the update_all calls above, so
+          # we'll fix things up here.
+          changed_attributes['locked_at'] = time
+          changed_attributes['locked_by'] = worker
+        end
+
+        def create_and_lock!(worker)
+          raise "job already exists" unless new_record?
+          self.locked_at = Delayed::Job.db_time_now
+          self.locked_by = worker
+          save!
         end
 
         def fail!
@@ -188,13 +333,6 @@ module Delayed
           self.destroy
           # re-raise so the worker logs the error, at least
           raise
-        end
-
-        # Get the current time (GMT or local depending on DB)
-        # Note: This does not ping the DB to get the time, so all your clients
-        # must have syncronized clocks.
-        def self.db_time_now
-          Time.now.in_time_zone
         end
 
         class Failed < Job

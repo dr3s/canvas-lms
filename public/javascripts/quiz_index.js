@@ -16,7 +16,15 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-I18n.scoped('quizzes.index', function(I18n) {
+define([
+  'i18n!quizzes.index',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* formErrors */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* confirmDelete */,
+  'jquery.templateData' /* getTemplateData */
+], function(I18n, $) {
 
 $(document).ready(function() {
   $(".delete_quiz_link").click(function(event) {
@@ -43,10 +51,9 @@ $(document).ready(function() {
       $list.append($quiz_item.show());
     });
     $dialog.find("button").attr('disabled', false);
-    $dialog.dialog('close').dialog({
-      autoOpen: false,
+    $dialog.dialog({
       width: 400
-    }).dialog('open');
+    });
   });
   $("#publish_quizzes_form").submit(function() {
     $(this).find("button").attr('disabled', true).filter('.submit_button').text(I18n.t('buttons.publishing_quizzes', 'Publishing Quizzes...'));

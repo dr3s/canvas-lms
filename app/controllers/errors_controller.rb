@@ -26,10 +26,10 @@ class ErrorsController < ApplicationController
 
   def index
     params[:page] = params[:page].to_i > 0 ? params[:page].to_i : 1
-    @reports = ErrorReport
+    @reports = ErrorReport.scoped(:include => :user)
 
     @message = params[:message]
-    if @message.present?
+    if error_search_enabled? && @message.present?
       @reports = @reports.scoped(:conditions => ["message LIKE ?", '%' + @message + '%'])
     elsif params[:category].blank?
       @reports = @reports.scoped(:conditions => "category != '404'")
@@ -38,11 +38,16 @@ class ErrorsController < ApplicationController
       @reports = @reports.scoped(:conditions => { :category => params[:category] })
     end
 
-    @reports = @reports.all(:limit => PER_PAGE, :offset => ((params[:page]-1)*PER_PAGE), :order => 'id DESC')
+    @reports = @reports.paginate(:per_page => PER_PAGE, :page => params[:page], :order => 'id DESC', :without_count => true)
   end
+
   def show
-    @reports = WillPaginate::Collection.new(1, 1, 1)
-    @reports.replace([ErrorReport.find(params[:id])])
+    @reports = [ErrorReport.find(params[:id])]
     render :action => 'index'
   end
+
+  def error_search_enabled?
+    Setting.get_cached("error_search_enabled", "true") == "true"
+  end
+  helper_method :error_search_enabled?
 end

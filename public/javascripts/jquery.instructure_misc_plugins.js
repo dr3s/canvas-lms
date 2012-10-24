@@ -15,8 +15,15 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
-I18n.scoped('instructure', function(I18n){
+define([
+  'i18n!instructure',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jqueryui/dialog',
+  'jquery.scrollToVisible' /* scrollToVisible */,
+  'vendor/jquery.ba-hashchange' /* hashchange */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function(I18n, $) {
 
   // this function is to prevent you from doing all kinds of expesive operations on a
   // jquery object that doesn't actually have any elements in it
@@ -59,66 +66,90 @@ I18n.scoped('instructure', function(I18n){
   //    behaves as if the request were a success.  Useful for testing.
   //  message: Confirmation message
   //  cancelled: Function to handle cancel.
-  //  confirmed: Functiont to handle confirm, before submit.
+  //  confirmed: Function to handle confirm, before submit.
   //  success: What to do on success.  If none provided, fades
   //    out the element and removes it from the DOM.
   //  error: Error.
+  //  dialog: If present, do a jquery.ui.dialog instead of a confirm(). If an
+  //    object, it will be merged into the dialog options.
   $.fn.confirmDelete = function(options) {
     var options = $.extend({}, $.fn.confirmDelete.defaults, options);
     var $object = this;
+    var $dialog = null;
     var result = true;
     options.noMessage = options.noMessage || options.no_message;
-    if(options.message && !options.noMessage) {
-      if(!$.skipConfirmations) {
+    var onContinue = function() {
+      if (!result) {
+        if (options.cancelled && $.isFunction(options.cancelled)) {
+          options.cancelled.call($object);
+        }
+        return;
+      }
+      if (!options.confirmed) {
+        options.confirmed = function() {
+          $object.dim();
+        };
+      }
+      options.confirmed.call($object);
+      if (options.url) {
+        if (!options.success) {
+          options.success = function(data) {
+            $object.fadeOut('slow', function() {
+              $object.remove();
+            });
+          };
+        }
+        var data = options.prepareData ? options.prepareData.call($object, $dialog) : {};
+        if (options.token) {
+          data.authenticity_token = options.token;
+        }
+        if (!data.authenticity_token) {
+          data.authenticity_token = $("#ajax_authenticity_token").text();
+        }
+        $.ajaxJSON(options.url, "DELETE", data, function(data) {
+          options.success.call($object, data);
+        }, function(data, request, status, error) {
+          if (options.error && $.isFunction(options.error)) {
+            options.error.call($object, data, request, status, error);
+          } else {
+            $.ajaxJSON.unhandledXHRs.push(request);
+          }
+        });
+      } else {
+        if (!options.success) {
+          options.success = function() {
+            $object.fadeOut('slow', function() {
+              $object.remove();
+            });
+          };
+        }
+        options.success.call($object);
+      }
+    }
+    if (options.message && !options.noMessage && !$.skipConfirmations) {
+      if (options.dialog) {
+        result = false;
+        var dialog_options = typeof(options.dialog) == "object" ? options.dialog : {};
+        $dialog = $(options.message).dialog($.extend({}, {
+          modal: true,
+          close: onContinue,
+          buttons: [
+            {
+              text: I18n.t('#buttons.cancel', 'Cancel'),
+              click: function() { $(this).dialog('close'); } // ; onContinue();
+            }, {
+              text: I18n.t('#buttons.delete', 'Delete'),
+              'class': 'btn-primary',
+              click: function() { result = true; $(this).dialog('close'); }
+            }
+          ]
+        }, dialog_options));
+        return;
+      } else {
         result = confirm(options.message);
       }
     }
-    if(!result) {
-      if(options.cancelled && $.isFunction(options.cancelled)) {
-        options.cancelled.call($object);
-      }
-      return;
-    }
-    if(!options.confirmed) {
-      options.confirmed = function() {
-        $object.dim();
-      };
-    }
-    options.confirmed.call($object);
-    if(options.url) {
-      if(!options.success) {
-        options.success = function(data) {
-          $object.fadeOut('slow', function() {
-            $object.remove();
-          });
-        };
-      }
-      var data = {};
-      if(options.token) {
-        data.authenticity_token = options.token;
-      }
-      if(!data.authenticity_token) {
-        data.authenticity_token = $("#ajax_authenticity_token").text();
-      }
-      $.ajaxJSON(options.url, "DELETE", data, function(data) {
-        options.success.call($object, data);
-      }, function(data, request, status, error) {
-        if(options.error && $.isFunction(options.error)) {
-          options.error.call($object, data, request, status, error);
-        } else {
-          $.ajaxJSON.unhandledXHRs.push(request);
-        }
-      });
-    } else {
-      if(!options.success) {
-        options.success = function() {
-          $object.fadeOut('slow', function() {
-            $object.remove();
-          });
-        };
-      }
-      options.success.call($object);
-    }
+    onContinue();
   };
   $.fn.confirmDelete.defaults = {
     message: I18n.t('confirms.default_delete_thing', "Are you sure you want to delete this?")
@@ -305,7 +336,7 @@ I18n.scoped('instructure', function(I18n){
     function fillWindowWithThisElement(){
       $toResize.height(0);
       var spaceLeftForThis = $window.height()
-                             - ($wrapper_container.offset().top + $wrapper_container.height())
+                             - ($wrapper_container.offset().top + $wrapper_container.outerHeight())
                              + ($main.height() - $not_right_side.height()),
           newHeight = Math.max(400, spaceLeftForThis);
 
@@ -379,24 +410,6 @@ I18n.scoped('instructure', function(I18n){
 
   };
 
-  $.fn.fixDialogButtons = function() {
-    return this.each(function() {
-      var $dialog = $(this);
-      $dialog.find('.button-container:last .button, button[type=submit]').ifExists(function($buttons){
-        $dialog.find('.button-container:last, button[type=submit]').hide();
-        var buttons = $buttons.map(function() {
-          var $button = $(this);
-          return {
-            text: $button.text(),
-            'data-text-while-loading': $button.data('textWhileLoading'),
-            click: function() { $button.click() }
-          };
-        }).get();
-        if (buttons.length) $dialog.dialog('option', 'buttons', buttons);
-      });
-    });
-  }
-
-  define('jquery.instructure_misc_plugins', ['i18n'], function(){ return $ });
+  return $;
 });
 

@@ -1,24 +1,18 @@
-###
-js!requires:
-  - vendor/jquery-1.6.4.js
-  - compiled/Template.js
-  - jQuery.ajaxJSON
-###
-
-define 'compiled/widget/CustomList', [
+define [
+  'jquery'
   'compiled/util/objectCollection'
   'jst/courseList/wrapper'
   'jst/courseList/content'
-], (objectCollection, wrapper, content) ->
+  'jquery.ajaxJSON'
+], (jQuery, objectCollection, wrapper, content) ->
 
   class CustomList
     options:
       animationDuration: 200
-      model: 'Course'
       dataAttribute: 'id'
       wrapper: wrapper
       content: content
-      url: '/favorites'
+      url: '/api/v1/users/self/favorites/courses'
       appendTarget: 'body',
       resetCount: 12
       onToggle: false
@@ -49,7 +43,7 @@ define 'compiled/widget/CustomList', [
     close: ->
       @wrapper.hide 0, =>
         @teardown()
-      @element.removeClass('customListEditing');
+      @element.removeClass('customListEditing')
       @options.onToggle?(off)
       @resetList() if @pinned.length is 0
 
@@ -119,7 +113,7 @@ define 'compiled/widget/CustomList', [
       callback = =>
         delete @requests.reset
 
-      @requests.reset = jQuery.ajaxJSON(@options.url + '/' + @options.model, 'DELETE', {}, callback, callback)
+      @requests.reset = jQuery.ajaxJSON(@options.url, 'DELETE', {}, callback, callback)
       @resetList()
 
     resetList: ->
@@ -143,12 +137,8 @@ define 'compiled/widget/CustomList', [
         args.unshift(item.id)
         @addError.apply(this, args)
 
-      data =
-        favorite:
-          context_type: @options.model,
-          context_id: item.id
-
-      req = jQuery.ajaxJSON(@options.url, 'POST', data, success, error)
+      url = @options.url + '/' + item.id   
+      req = jQuery.ajaxJSON(url, 'POST', {}, success, error)
 
       @requests.add[item.id] = req
 
@@ -168,7 +158,7 @@ define 'compiled/widget/CustomList', [
         @removeError.apply(this, args)
 
       url = @options.url + '/' + item.id
-      req = jQuery.ajaxJSON(url, 'DELETE', {context_type: @options.model}, success, error)
+      req = jQuery.ajaxJSON(url, 'DELETE', {}, success, error)
 
       @requests.remove[item.id] = req
 

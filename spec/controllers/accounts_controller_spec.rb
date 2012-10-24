@@ -128,74 +128,6 @@ describe AccountsController do
     end
   end
 
-  describe "SIS imports" do
-    it "should set batch mode and term if given" do
-      account_with_admin_logged_in
-      @account.update_attribute(:allow_sis_import, true)
-      post 'sis_import_submit', :account_id => @account.id, :import_type => 'instructure_csv_zip', :batch_mode => '1'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.batch_mode.should be_true
-      batch.batch_mode_term.should be_nil
-      batch.destroy
-
-      post 'sis_import_submit', :account_id => @account.id, :import_type => 'instructure_csv_zip', :batch_mode => '1', :batch_mode_term_id => @account.enrollment_terms.first.id
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.batch_mode.should be_true
-      batch.batch_mode_term.should == @account.enrollment_terms.first
-    end
-
-    it "should set sis stickiness options if given" do
-      account_with_admin_logged_in
-      @account.update_attribute(:allow_sis_import, true)
-
-      post 'sis_import_submit', :account_id => @account.id,
-          :import_type => 'instructure_csv_zip'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.options.should == {}
-      batch.destroy
-
-      post 'sis_import_submit', :account_id => @account.id,
-          :import_type => 'instructure_csv_zip', :override_sis_stickiness => '1'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.options.should == { :override_sis_stickiness => true }
-      batch.destroy
-
-      post 'sis_import_submit', :account_id => @account.id,
-          :import_type => 'instructure_csv_zip', :override_sis_stickiness => '1',
-          :add_sis_stickiness => '1'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.options.should == { :override_sis_stickiness => true, :add_sis_stickiness => true }
-      batch.destroy
-
-      post 'sis_import_submit', :account_id => @account.id,
-          :import_type => 'instructure_csv_zip', :override_sis_stickiness => '1',
-          :clear_sis_stickiness => '1'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.options.should == { :override_sis_stickiness => true, :clear_sis_stickiness => true }
-      batch.destroy
-
-      post 'sis_import_submit', :account_id => @account.id,
-          :import_type => 'instructure_csv_zip', :clear_sis_stickiness => '1'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.options.should == {}
-      batch.destroy
-
-      post 'sis_import_submit', :account_id => @account.id,
-          :import_type => 'instructure_csv_zip', :add_sis_stickiness => '1'
-      batch = SisBatch.last
-      batch.should_not be_nil
-      batch.options.should == {}
-      batch.destroy
-    end
-  end
-
   describe "add_account_user" do
     it "should allow adding a new account admin" do
       account_with_admin_logged_in
@@ -213,31 +145,82 @@ describe AccountsController do
       account_with_admin_logged_in(:active_all => 1)
       @subaccount = @account.sub_accounts.create!
       @munda = user_with_pseudonym(:account => @account, :active_all => 1, :username => 'munda@instructure.com')
-      post 'add_account_user', :account_id => @subaccount.id, :membership_type => 'AccountAdmin', :user_list => 'munda@instructure.com', :only_search_existing_users => 1
+      post 'add_account_user', :account_id => @subaccount.id, :membership_type => 'AccountAdmin', :user_list => 'munda@instructure.com'
       response.should be_success
       @subaccount.account_users.map(&:user).should == [@munda]
     end
   end
 
-  it "should redirect to CAS if CAS is enabled" do
-    account = account_with_cas({:account => Account.default})
-    config = { :cas_base_url => account.account_authorization_config.auth_base }
-    cas_client = CASClient::Client.new(config)
-    get 'show', :id => account.id
-    response.should redirect_to(cas_client.add_service_to_login_url(login_url))
+  describe "authentication" do
+    it "should redirect to CAS if CAS is enabled" do
+      account = account_with_cas({:account => Account.default})
+      config = { :cas_base_url => account.account_authorization_config.auth_base }
+      cas_client = CASClient::Client.new(config)
+      get 'show', :id => account.id
+      response.should redirect_to(@controller.delegated_auth_redirect_uri(cas_client.add_service_to_login_url(cas_login_url)))
+    end
   end
 
-  it "should count total courses correctly" do
-    account_with_admin_logged_in
-    course
-    @course.course_sections.create!
-    @course.course_sections.create!
-    @course.update_account_associations
-    @account.course_account_associations.length.should == 3 # one for each section, and the "nil" section
+  describe "courses" do
+    it "should count total courses correctly" do
+      account_with_admin_logged_in
+      course
+      @course.course_sections.create!
+      @course.course_sections.create!
+      @course.update_account_associations
+      @account.course_account_associations.length.should == 3 # one for each section, and the "nil" section
 
-    get 'show', :id => @account.id, :format => 'html'
+      get 'show', :id => @account.id, :format => 'html'
 
-    assigns[:associated_courses_count].should == 1
+      assigns[:associated_courses_count].should == 1
+    end
+    # Check that both published and un-published courses have the correct count
+    it "should count course's student enrollments" do
+      account_with_admin_logged_in
+      course_with_teacher(:account => @account)
+      c1 = @course
+      course_with_teacher(:course => c1)
+      @student = User.create
+      c1.enroll_user(@student, "StudentEnrollment", :enrollment_state => 'active')
+      c1.save
+
+      course_with_teacher(:account => @account, :active_all => true)
+      c2 = @course
+      @student1 = User.create
+      c2.enroll_user(@student1, "StudentEnrollment", :enrollment_state => 'active')
+      @student2 = User.create
+      c2.enroll_user(@student2, "StudentEnrollment", :enrollment_state => 'active')
+      c2.save
+
+      get 'show', :id => @account.id, :format => 'html'
+
+      assigns[:courses].find {|c| c.id == c1.id }.read_attribute(:student_count).should == c1.student_enrollments.count
+      assigns[:courses].find {|c| c.id == c2.id }.read_attribute(:student_count).should == c2.student_enrollments.count
+
+    end
+  end
+
+  context "special account ids" do
+    before do
+      account_with_admin_logged_in(:account => Account.site_admin)
+      @account = Account.create!
+      LoadAccount.stubs(:default_domain_root_account).returns(@account)
+    end
+
+    it "should allow self" do
+      get 'show', :id => 'self', :format => 'html'
+      assigns[:account].should == @account
+    end
+
+    it "should allow default" do
+      get 'show', :id => 'default', :format => 'html'
+      assigns[:account].should == Account.default
+    end
+
+    it "should allow site_admin" do
+      get 'show', :id => 'site_admin', :format => 'html'
+      assigns[:account].should == Account.site_admin
+    end
   end
 
   describe "update" do
@@ -256,11 +239,14 @@ describe AccountsController do
       @account.sis_source_id.should be_nil
     end
 
-    it "should not allow non-site-admins to update global_includes" do
+    it "should not allow non-site-admins to update certain settings" do
       account_with_admin_logged_in
-      post 'update', :id => @account.id, :account => { :settings => { :global_includes => true } }
+      post 'update', :id => @account.id, :account => { :settings => { 
+        :global_includes => true, :enable_scheduler => true, :enable_profiles => true } }
       @account.reload
       @account.global_includes?.should be_false
+      @account.enable_scheduler?.should be_false
+      @account.enable_profiles?.should be_false
     end
 
     it "should allow site_admin to update global_includes" do
@@ -268,9 +254,12 @@ describe AccountsController do
       user_session(@user)
       @account = Account.create!
       Account.site_admin.add_user(@user)
-      post 'update', :id => @account.id, :account => { :settings => { :global_includes => true } }
+      post 'update', :id => @account.id, :account => { :settings => { 
+        :global_includes => true, :enable_scheduler => true, :enable_profiles => true } }
       @account.reload
       @account.global_includes?.should be_true
+      @account.enable_scheduler?.should be_true
+      @account.enable_profiles?.should be_true
     end
   end
 end

@@ -15,10 +15,22 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
-require(['i18n'], function(I18n) {
-
-  I18n = I18n.scoped('quizzes.take_quiz');
+define([
+  'i18n!quizzes.take_quiz',
+  'jquery' /* $ */,
+  'quiz_timing',
+  'compiled/behaviors/autoBlurActiveInput',
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_date_and_time' /* friendlyDatetime, friendlyDate */,
+  'jquery.instructure_forms' /* getFormData, errorBox */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* scrollSidebar */,
+  'compiled/jquery.rails_flash_notifications',
+  'compiled/tinymce',
+  'tinymce.editor_box' /* editorBox */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'compiled/behaviors/quiz_selectmenu'
+], function(I18n, $, timing, autoBlurActiveInput) {
 
   var lastAnswerSelected = null;
   var quizSubmission = (function() {
@@ -46,7 +58,7 @@ require(['i18n'], function(I18n) {
       started_at: started_at,
       end_at: end_at,
       time_limit: parseInt($(".time_limit").text(), 10) || null,
-      updateSubmission: function(repeat) {
+      updateSubmission: function(repeat, beforeLeave) {
         if(quizSubmission.submitting && !repeat) { return; }
         var now = new Date();
         if((now - quizSubmission.lastSubmissionUpdate) < 1000) { return }
@@ -59,31 +71,63 @@ require(['i18n'], function(I18n) {
         });
 
         $last_saved.text(I18n.t('saving', 'Saving...'));
-        $.ajaxJSON($(".backup_quiz_submission_url").attr('href'), 'PUT', data, function(data) {
-          $last_saved.text(I18n.t('saved_at', 'Saved at %{t}', { t: $.friendlyDatetime(new Date()) }));
-          quizSubmission.currentlyBackingUp = false;
-          if(repeat) {
-            setTimeout(function() {quizSubmission.updateSubmission(true) }, 30000);
-          }
-          if(data && data.end_at) {
-            quizSubmission.end_at.text(data.end_at);
-            quizSubmission.referenceDate = null;
-            if(data.end_at > quizSubmission.end_at.text()) {
-              $.flashMessage(I18n.t('notices.extra_time', 'You have been given extra time on this attempt'));
-            }
-          }
-        }, function() {
-          var current_user_id = $("#identity .user_id").text() || "none";
-          quizSubmission.currentlyBackingUp = false;
-          $.ajaxJSON(location.protocol + '//' + location.host + "/simple_response.json?user_id=" + current_user_id + "&rnd=" + Math.round(Math.random() * 9999999), 'GET', {}, function() {
-          }, function() {
-            ajaxErrorFlash(I18n.t('errors.connection_lost', "Connection to %{host} was lost.  Please make sure you're connected to the Internet before continuing.", {'host': location.host}), request);
-          }, {skipDefaultError: true});
+        var url = $(".backup_quiz_submission_url").attr('href');
+        // If called before leaving the page (ie. onbeforeunload), we can't use any async or FF will kill the PUT request.
+        if (beforeLeave){
+          $.flashMessage(I18n.t('saving', 'Saving...'));
+          $.ajax({
+            url: url,
+            data: data,
+            type: 'PUT',
+            dataType: 'json',
+            async: false        // NOTE: Not asynchronous. Otherwise Firefox will cancel the request as navigating away from the page.
+            // NOTE: No callbacks. Don't care about response. Just making effort to save the quiz
+          });
+        }
+        else {
+          $.ajaxJSON(url, 'PUT', data,
+            // Success callback
+            function(data) {
+              $last_saved.text(I18n.t('saved_at', 'Saved at %{t}', { t: $.friendlyDatetime(new Date()) }));
+              quizSubmission.currentlyBackingUp = false;
+              if(repeat) {
+                setTimeout(function() {quizSubmission.updateSubmission(true) }, 30000);
+              }
+              if(data && data.end_at) {
+                var endAtFromServer     = Date.parse(data.end_at),
+                    submissionEndAt     = Date.parse(quizSubmission.end_at.text()),
+                    serverEndAtTime     = endAtFromServer.getTime(),
+                    submissionEndAtTime = submissionEndAt.getTime();
 
-          if(repeat) {
-            setTimeout(function() {quizSubmission.updateSubmission(true) }, 30000);
-          }
-        }, {timeout: 5000 });
+                quizSubmission.referenceDate = null;
+
+                // if the new end_at from the server is different than our current end_at, then notify
+                // the user that their time limit's changed and let updateTime do the rest.
+                if (serverEndAtTime !== submissionEndAtTime) {
+                  serverEndAtTime > submissionEndAtTime ?
+                    $.flashMessage(I18n.t('notices.extra_time', 'You have been given extra time on this attempt')) :
+                    $.flashMessage(I18n.t('notices.less_time', 'Your time for this quiz has been reduced.'));
+
+                  quizSubmission.end_at.text(data.end_at);
+                  endAtText   = data.end_at;
+                  endAtParsed = new Date(data.end_at);
+                }
+              }
+            },
+            // Error callback
+            function() {
+            var current_user_id = $("#identity .user_id").text() || "none";
+            quizSubmission.currentlyBackingUp = false;
+            $.ajaxJSON(location.protocol + '//' + location.host + "/simple_response.json?user_id=" + current_user_id + "&rnd=" + Math.round(Math.random() * 9999999), 'GET', {}, function() {
+            }, function() {
+              ajaxErrorFlash(I18n.t('errors.connection_lost', "Connection to %{host} was lost.  Please make sure you're connected to the Internet before continuing.", {'host': location.host}), request);
+            }, {skipDefaultError: true});
+
+            if(repeat) {
+              setTimeout(function() {quizSubmission.updateSubmission(true) }, 30000);
+            }
+          }, {timeout: 5000 });
+        }
       },
 
       updateTime: function() {
@@ -179,20 +223,18 @@ require(['i18n'], function(I18n) {
   });
 
   $(function() {
-    // prevent mousewheel from changing answers on dropdowns see #6143
-    $('select').bind('mousewheel', false);
-
     $.scrollSidebar();
+    autoBlurActiveInput();
 
     if($("#preview_mode_link").length == 0) {
       window.onbeforeunload = function() {
-        quizSubmission.updateSubmission();
+        quizSubmission.updateSubmission(false, true);
         if(!quizSubmission.submitting && !quizSubmission.alreadyAcceptedNavigatingAway) {
           return I18n.t('confirms.unfinished_quiz', "You're about to leave the quiz unfinished.  Continue anyway?");
         }
       };
       $(document).delegate('a', 'click', function(event) {
-        if($(this).closest('.ui-dialog,.mceToolbar').length > 0) { return; }
+        if($(this).closest('.ui-dialog,.mceToolbar,.ui-selectmenu').length > 0) { return; }
         if(!event.isDefaultPrevented()) {
           var url = $(this).attr('href') || "";
           var hashStripped = location.href;
@@ -249,33 +291,6 @@ require(['i18n'], function(I18n) {
       }
     });
 
-    /* the intent of this is to ensure that the class doesn't ever change while
-       the dropdown is open. in windows chrome, mouseleave events still fire
-       for ancestors when a dropdown is open, and any style changes to them
-       cause the dropdown to jump/reset. this effectively normalizes the
-       mouseenter/mouseleave behavior across platforms and browsers, but the
-       side effect is that the hover class is retained until the mouse has left
-       and the select has blurred. */
-    $questions.find('.question').bind({
-      mouseenter: function(event) {
-        var $container = $(this);
-        var $activeSelect = $container.find($(document.activeElement)).filter("select");
-        if ($activeSelect.length) $activeSelect.unbind('blur.unhoverQuestion');
-        if (!$container.hasClass('hover')) $container.addClass('hover');
-      },
-      mouseleave: function(event) {
-        var $container = $(this);
-        var $activeSelect = $container.find($(document.activeElement)).filter("select");
-        if ($activeSelect.length) {
-          $activeSelect.one('blur.unhoverQuestion', function() {
-            $(this).closest('.question').trigger('mouseleave');
-          });
-        } else {
-          $container.removeClass('hover');
-        }
-      }
-    });
-
     $questions
       .delegate(":checkbox,:radio,label", 'change mouseup', function(event) {
         var $answer = $(this).parents(".answer");
@@ -284,30 +299,24 @@ require(['i18n'], function(I18n) {
           quizSubmission.updateSubmission();
         }
       })
-      .delegate(":text,textarea", 'change blur', function(event, update) {
+      .delegate(":text,textarea,select", 'change', function(event, update) {
+        var $this = $(this);
+        if ($this.hasClass('numerical_question_input')) {
+          var val = parseFloat($this.val());
+          $this.val(isNaN(val) ? "" : val.toFixed(4));
+        }
         if (update !== false) {
           quizSubmission.updateSubmission();
         }
       })
       .delegate(".numerical_question_input", {
-        keypress: function(event) {
-          var string = String.fromCharCode(event.charCode || event.keyCode);
-          if(event.charCode == 0 || string == "-" || string == "." || string == "0" || parseInt(string, 10)) {
-            $(this).triggerHandler('focus');
-          } else {
+        keyup: function(event) {
+          var val = $(this).val();
+          if (val === '' || !isNaN(parseFloat(val))) {
+            $(this).triggerHandler('focus'); // makes the errorBox go away
+          } else{
             $(this).errorBox(I18n.t('errors.only_numerical_values', "only numerical values are accepted"));
-            event.preventDefault();
-            event.stopPropagation();
           }
-        },
-        'change blur': function() {
-          var val = parseFloat($(this).val());
-          if (isNaN(val)){
-            val = "";
-          } else {
-            val = val.toFixed(4);
-          }
-          $(this).val(val);
         }
       })
       .delegate(".flag_question", 'click', function() {
@@ -315,15 +324,24 @@ require(['i18n'], function(I18n) {
         $question.toggleClass('marked');
         $("#list_" + $question.attr('id')).toggleClass('marked');
       })
-      .delegate(".question_input", 'change', function() {
+      .delegate(".question_input", 'change', function(event, update, changedMap) {
         var $this = $(this),
-            tagName = $(this)[0].tagName.toUpperCase(),
+            tagName = this.tagName.toUpperCase(),
+            id = $this.parents(".question").attr('id'),
             val = "";
+        if (tagName == "A") return;
+        if (changedMap) { // reduce redundant jquery lookups and other calls
+          if (changedMap[id]) return;
+          changedMap[id] = true;
+        }
 
         if (tagName == "TEXTAREA") {
           val = $this.editorBox('get_code');
-        } else if (tagName == "TEXTAREA" || tagName == "SELECT" || $this.attr('type') == "text") {
+        } else if ($this.attr('type') == "text") {
           val = $this.val();
+        } else if (tagName == "SELECT") {
+          var $selects = $this.parents(".question").find("select.question_input");
+          val = !$selects.filter(function() { return !$(this).val() }).length;
         } else {
           $this.parents(".question").find(".question_input").each(function() {
             if($(this).attr('checked') || $(this).attr('selected')) {
@@ -331,9 +349,9 @@ require(['i18n'], function(I18n) {
             }
           });
         }
-        $("#list_" + $this.parents(".question").attr('id'))[val ? 'addClass' : 'removeClass']('answered');
+        $("#list_" + id)[val ? 'addClass' : 'removeClass']('answered');
       })
-      .find(".question_input").change();
+      .find(".question_input").trigger('change', [false, {}]);
 
 
     setInterval(function() {
@@ -361,6 +379,12 @@ require(['i18n'], function(I18n) {
         }
       });
     }, 1000);
+
+    // Suppress "<ENTER>" key from submitting a form when clicked inside a text input.
+    $("#submit_quiz_form input[type=text]").keypress(function(e){
+      if (e.keyCode == 13)
+        return false;
+    });
 
     $("#submit_quiz_form").submit(function(event) {
       $(".question_holder textarea.question_input").each(function() { $(this).change(); });

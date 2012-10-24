@@ -1,5 +1,19 @@
-$(document).ready(function() {
-  I18n.scoped('conferences', function(I18n) {
+define([
+  'INST' /* INST */,
+  'i18n!conferences',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* formSubmit, fillFormData */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags */,
+  'jquery.instructure_misc_plugins' /* confirmDelete, fragmentChange, showIf */,
+  'jquery.keycodes' /* keycodes */,
+  'jquery.loadingImg' /* loadingImage */,
+  'compiled/jquery.rails_flash_notifications',
+  'jquery.templateData' /* fillTemplateData, getTemplateData */
+], function(INST, I18n, $) {
+
+  $(document).ready(function() {
     $("#add_conference_form .cancel_button").click(function() {
       if($("#add_conference_form").prev(".conference").length > 0) {
         $("#add_conference_form").hide();
@@ -190,15 +204,14 @@ $(document).ready(function() {
             $a.text(data[i].name);
             $box.append($a).append("<br>");
           }
-          $box.dialog('close').dialog({
-            autoOpen: false,
+          $box.dialog({
             width: 425,
             minWidth: 425,
             minHeight: 215,
             resizable: true,
             height: "auto",
             title: $self.text()
-          }).dialog('open');
+          });
         } else {
           window.open(data[0].url);
         }
@@ -206,3 +219,4 @@ $(document).ready(function() {
     });
   });
 });
+

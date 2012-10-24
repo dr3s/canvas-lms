@@ -26,15 +26,18 @@ class CourseSection < ActiveRecord::Base
   belongs_to :root_account, :class_name => 'Account'
   belongs_to :account
   has_many :enrollments, :include => :user, :conditions => ['enrollments.workflow_state != ?', 'deleted'], :dependent => :destroy
-  has_many :students, :through => :student_enrollments, :source => :user, :order => User.sortable_name_order_by_clause
+  has_many :all_enrollments, :class_name => 'Enrollment'
+  has_many :students, :through => :student_enrollments, :source => :user
   has_many :student_enrollments, :class_name => 'StudentEnrollment', :conditions => ['enrollments.workflow_state != ? AND enrollments.workflow_state != ? AND enrollments.workflow_state != ? AND enrollments.workflow_state != ?', 'deleted', 'completed', 'rejected', 'inactive'], :include => :user
-  has_many :admin_enrollments, :class_name => 'Enrollment', :conditions => "(enrollments.type = 'TaEnrollment' or enrollments.type = 'TeacherEnrollment')"
+  has_many :instructor_enrollments, :class_name => 'Enrollment', :conditions => "(enrollments.type = 'TaEnrollment' or enrollments.type = 'TeacherEnrollment')"
+  has_many :admin_enrollments, :class_name => 'Enrollment', :conditions => "(enrollments.type = 'TaEnrollment' or enrollments.type = 'TeacherEnrollment' or enrollments.type = 'DesignerEnrollment')"
   has_many :users, :through => :enrollments
   has_many :course_account_associations
-  
+  has_many :calendar_events, :as => :context
+
   before_validation :infer_defaults, :verify_unique_sis_source_id
   validates_presence_of :course_id
-  
+
   before_save :set_update_account_associations_if_changed
   before_save :maybe_touch_all_enrollments
   after_save :update_account_associations_if_changed
@@ -44,6 +47,19 @@ class CourseSection < ActiveRecord::Base
 
   def maybe_touch_all_enrollments
     self.touch_all_enrollments if self.start_at_changed? || self.end_at_changed? || self.restrict_enrollments_to_section_dates_changed? || self.course_id_changed?
+  end
+
+  def participating_students
+    course.participating_students.scoped(:conditions => ["enrollments.course_section_id = ?", id])
+  end
+
+  def participants
+    participating_students + 
+    course.participating_admins.scoped(:conditions => ["enrollments.course_section_id = ? OR NOT COALESCE(enrollments.limit_privileges_to_course_section, ?)", id, false])
+  end
+
+  def available?
+    course.available?
   end
 
   def touch_all_enrollments
@@ -67,8 +83,14 @@ class CourseSection < ActiveRecord::Base
     given {|user, session| self.course.account_membership_allows(user, session, :read_roster) }
     can :read
 
+    given {|user, session| self.cached_context_grants_right?(user, session, :manage_calendar) }
+    can :manage_calendar
+
     given {|user, session| self.enrollments.find_by_user_id(user.id) && self.cached_context_grants_right?(user, session, :read_roster) }
     can :read
+
+    given {|user, session| self.cached_context_grants_right?(user, session, :read_as_admin) }
+    can :read_as_admin
   end
 
   def set_update_account_associations_if_changed
@@ -76,11 +98,11 @@ class CourseSection < ActiveRecord::Base
     @should_update_account_associations = false if self.new_record? && self.account_id.nil?
     true
   end
-  
+
   def update_account_associations_if_changed
     send_later_if_production(:update_account_associations) if @should_update_account_associations && !Course.skip_updating_account_associations?
   end
-  
+
   def update_account_associations
     Course.update_account_associations([self.course, self.nonxlist_course].compact)
     self.course.try(:update_account_associations)
@@ -90,16 +112,18 @@ class CourseSection < ActiveRecord::Base
   def verify_unique_sis_source_id
     return true unless self.sis_source_id
     existing_section = CourseSection.find_by_root_account_id_and_sis_source_id(self.root_account_id, self.sis_source_id)
-    return true if !existing_section || existing_section.id == self.id 
-    
+    return true if !existing_section || existing_section.id == self.id
+
     self.errors.add(:sis_source_id, t('sis_id_taken', "SIS ID \"%{sis_id}\" is already in use", :sis_id => self.sis_source_id))
     false
   end
-  
+
+  alias_method :parent_event_context, :course
+
   def section_code
     self.name ||= read_attribute(:section_code)
   end
-  
+
   def infer_defaults
     self.root_account_id ||= (self.course.root_account_id rescue nil) || Account.default.id
     self.assert_course unless self.course
@@ -110,39 +134,34 @@ class CourseSection < ActiveRecord::Base
     #   and I don't know which one is best, or which one to show.
     name_had_changed = name_changed?
     # Here's the current plan:
-    # - if it's from the SIS, long_section_code seems like the best bet
     # - otherwise, just use name
     # - use the method display_name to consolidate this logic
     self.name ||= self.course.name if self.default_section
     self.name ||= "#{self.course.name} #{Time.zone.today.to_s}"
     self.section_code ||= self.name
-    self.long_section_code ||= self.name
     if name_had_changed
       self.section_code = self.name
-      self.long_section_code = self.name
     end
   end
-  
+
   def defined_by_sis?
     !!self.sis_source_id
   end
-  
+
   # NOTE: Don't assume the section_name contains the course name
-  # it might include it if the SIS specifies, but you shouldn't 
+  # it might include it if the SIS specifies, but you shouldn't
   # assume that this method on its own will be enough for a user
   # to recognize their course from a list
   # The only place this is used by itself right now is when listing
   # enrollments within a course
   def display_name
-    @section_display_name ||= defined_by_sis? ? 
-      (self.long_section_code || self.name || self.section_code) : 
-      (self.name || self.section_code || self.long_section_code)
+    @section_display_name ||= self.name || self.section_code
   end
-  
+
   def assert_course
-    self.course ||= Course.create!(:name => self.name || self.section_code || self.long_section_code, :root_account => self.root_account)
+    self.course ||= Course.create!(:name => self.name || self.section_code, :root_account => self.root_account)
   end
-  
+
   def move_to_course(course, *opts)
     return self if self.course_id == course.id
     old_course = self.course
@@ -167,13 +186,13 @@ class CourseSection < ActiveRecord::Base
     end
     Enrollment.send_now_or_later(opts.include?(:run_jobs_immediately) ? :now : :later, :recompute_final_score, user_ids, course.id)
   end
-  
+
   def crosslist_to_course(course, *opts)
     return self if self.course_id == course.id
     self.nonxlist_course_id ||= self.course_id
     self.move_to_course(course, *opts)
   end
-  
+
   def uncrosslist(*opts)
     return unless self.nonxlist_course_id
     if self.nonxlist_course.workflow_state == "deleted"
@@ -184,40 +203,40 @@ class CourseSection < ActiveRecord::Base
     self.nonxlist_course = nil
     self.move_to_course(nonxlist_course, *opts)
   end
-  
+
   def crosslisted?
     return !!self.nonxlist_course_id
   end
-  
+
   def destroy_course_if_no_more_sections
     if self.deleted? && self.course.course_sections.active.empty?
       self.course.destroy
     end
   end
-  
+
   def deletable?
     self.enrollments.count == 0
   end
-  
+
   def enroll_user(user, type, state='invited')
     self.course.enroll_user(user, type, :enrollment_state => state, :section => self)
   end
-  
+
   workflow do
     state :active
     state :deleted
   end
-  
+
   alias_method :destroy!, :destroy
   def destroy
     self.workflow_state = 'deleted'
     save!
   end
-  
+
   named_scope :active, lambda {
     { :conditions => ['course_sections.workflow_state != ?', 'deleted'] }
   }
-  
+
   named_scope :sis_sections, lambda{|account, *source_ids|
     {:conditions => {:root_account_id => account.id, :sis_source_id => source_ids}, :order => :sis_source_id}
   }

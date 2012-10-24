@@ -1,26 +1,13 @@
 <%
   content_for :page_title, "Gradebook - #{@context.name}"
-  @body_classes << "gradebook2"
+  @body_classes << "gradebook2 full-width"
   @show_left_side = false
-  add_crumb t(:go_back_to_the_old_gradebook, "Go back to the old gradebook"), context_url(@context, :change_gradebook_version_context_gradebook_url, :reset => true), :id => 'change_gradebook_version_link_holder'
-  jammit_js :jquery_ui_menu, :slickgrid, :assignmentMuter, :gradebook2
+  add_crumb t(:go_back_to_the_old_gradebook, "Go back to the old gradebook", :version => 1), context_url(@context, :change_gradebook_version_context_gradebook_url, :reset => true), :id => 'change_gradebook_version_link_holder'
   jammit_css :slickgrid, :gradebook2
-  options = {
-    :chunk_size => Setting.get_cached('gradebook2.submissions_chunk_size', '35').to_i,
-    :assignment_groups_url => api_v1_course_assignment_groups_url(@context, :include => [:assignments]),
-    :sections_and_students_url => api_v1_course_sections_url(@context, :include => [:students]),
-    :submissions_url => api_v1_course_student_submissions_url(@context, :grouped => '1'),
-    :change_grade_url => api_v1_course_assignment_submission_url(@context, ":assignment", ":submission"),
-    :context_url => context_url(@context, :context_url),
-    :download_assignment_submissions_url => context_url(@context, :context_assignment_submissions_url, "{{ assignment_id }}", :zip => 1),
-    :re_upload_submissions_url => context_url(@context, :context_gradebook_submissions_upload_url, "{{ assignment_id }}"),
-    :context_id => @context.id,
-    :context_code => @context.asset_string,
-    :group_weighting_scheme => @context.group_weighting_scheme
-  }
+  js_bundle :gradebook2
 %>
 <div id="gradebook_wrapper" class="use-css-transitions-for-show-hide" style="display:none;">
-  <div id="gradebook-toolbar">
+  <div id="gradebook-toolbar" class="toolbar">
     <button style="display:none;" id="section_to_show">Showing: <span id="section_being_shown">All Sections</span></button>
     <button id="gradebook_settings">&nbsp;</button>
     <ul style="display: none;">
@@ -31,11 +18,16 @@
       <li><a id="publish_to_sis" href="<%= context_url(@context, :context_details_url, :fragment => "tab-grade-publishing") %>"><%= t('publish_to_sis', 'Publish grades to SIS') %></a></li>
       <% end %>
       <li><a class="dialog_opener" role="button" aria-controls="assignment_group_weights_dialog" href="<%= context_url(@context, :context_assignments_url) %>"><%= t('set_group_weights', 'Set Group Weights') %></a></li>
+      <li><a class="student_names_toggle" href="#" role="button"><%= t('hide_student_names', 'Hide Student Names') %></a></li>
       <li><a data-arrange-columns-by="due_date" href="#"><label><%= t('arrange_columns_by_due_date', 'Arrange columns by due date') %><input type="radio" name="arrange-columns-by" /></label></a></li>
       <li><a data-arrange-columns-by="assignment_group" href="#"><label><%= t('arrange_columns_by_group', 'Arrange columns by assignment group') %><input type="radio" name="arrange-columns-by" /></label></a></li>
       <li><a href="#"><label><%= t('show_attendance_columns', 'Show Attendance Columns') %> <input type="checkbox" id="show_attendance" /></label></a></li>
-      <li><a href="#"><label><%= t('include_ungraded', 'Include Ungraded Assignments') %><input type="checkbox" id="include_ungraded_assignments" /></label></a></li>
+      <li><a href="#"><label><%= t('include_ungraded', "Treat Ungraded as 0's") %><input type="checkbox" id="include_ungraded_assignments" /></label></a></li>
     </ul>
+    <div class="gradebook_filter">
+      <% placeholder = t('filter_by_student', 'Filter by student name or secondary ID') %>
+      <input type="text" placeholder="<%= placeholder %>" aria-label="<%= placeholder %>">
+    </div>
   </div>
   <div id="gradebook-grid-wrapper">
     <div id="gradebook_students_grid"></div>
@@ -46,19 +38,3 @@
     <%= render :partial => 'submissions/submission_download' %>
   </div>
 </div>
-
-<% js_block do %>
-  <script>
-    GRADEBOOK_TRANSLATIONS = <%= {
-      :submission_tooltip_dropped => t('dropped_for_grading', 'Dropped for grading purposes'),
-      :submission_tooltip_late => t('submitted_late', 'Submitted late'),
-      :submission_tooltip_muted => t('muted_students_wont_see', 'This assignment is muted, students will not see changes'),
-      :submission_tooltip_resubmitted => t('resubmitted', 'Resubmitted since last graded'),
-      :submission_tooltip_ungraded => t('ungraded', 'Not factored into grading'),
-    }.to_json.html_safe %>;
-    require(['compiled/Gradebook'], function(Gradebook){
-      new Gradebook(<%= options.to_json.html_safe %>);
-    });
-
-  </script>
-<% end %>

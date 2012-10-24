@@ -21,13 +21,22 @@ class ConferencesController < ApplicationController
   add_crumb(proc{ t '#crumbs.conferences', "Conferences"}) { |c| c.send(:named_context_url, c.instance_variable_get("@context"), :context_conferences_url) }
   before_filter { |c| c.active_tab = "conferences" }
   before_filter :require_config
-  
+  before_filter :reject_student_view_student
+
   def index
     @conferences = @context.web_conferences.select{|c| c.grants_right?(@current_user, session, :read) }
     if authorized_action(@context, @current_user, :read)
       return unless tab_enabled?(@context.class::TAB_CONFERENCES)
       log_asset_access("conferences:#{@context.asset_string}", "conferences", "other")
-      @users = @context.users
+      
+      scope = @context.users
+      if @context.respond_to?(:participating_typical_users)
+        scope = @context.participating_typical_users
+      end
+      @users = scope.scoped({
+        :conditions => ["users.id <> ?", @current_user.id],
+        :order => User.sortable_name_order_by_clause
+      }).all.uniq
     end
   end
   
@@ -102,7 +111,7 @@ class ConferencesController < ApplicationController
         redirect_to named_context_url(@context, :context_conferences_url)
         return
       end
-      if @conference.grants_right?(@current_user, session, :initiate) || @conference.active?(true)
+      if @conference.grants_right?(@current_user, session, :initiate) || @conference.grants_right?(@current_user, session, :resume) || @conference.active?(true)
         @conference.add_attendee(@current_user)
         @conference.restart if @conference.ended_at && @conference.grants_right?(@current_user, session, :initiate)
         log_asset_access(@conference, "conferences", "conferences", 'participate')

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2012 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -19,6 +19,8 @@
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
 describe UsersController, :type => :integration do
+
+
   before do
     course_with_student(:active_all => true)
   end
@@ -26,13 +28,13 @@ describe UsersController, :type => :integration do
   it "should check for auth" do
     get("/api/v1/users/self/activity_stream")
     response.status.should == '401 Unauthorized'
-    JSON.parse(response.body).should == { 'status' => 'unauthorized' }
+    JSON.parse(response.body).should == {"message"=>"Invalid access token.", "status"=>"unauthorized"}
 
     @course = factory_with_protected_attributes(Course, course_valid_attributes)
     raw_api_call(:get, "/api/v1/courses/#{@course.id}/activity_stream",
                 :controller => "courses", :action => "activity_stream", :format => "json", :course_id => @course.to_param)
     response.status.should == '401 Unauthorized'
-    JSON.parse(response.body).should == { 'status' => 'unauthorized' }
+    JSON.parse(response.body).should == {"message"=>"You are not authorized to perform that action.", "status"=>"unauthorized"}
   end
 
   it "should return the activity stream" do
@@ -40,6 +42,10 @@ describe UsersController, :type => :integration do
                     { :controller => "users", :action => "activity_stream", :format => 'json' })
     json.size.should == 0
     google_docs_collaboration_model(:user_id => @user.id)
+    @context = @course
+    @topic1 = discussion_topic_model
+    # introduce a dangling StreamItemInstance
+    StreamItem.delete_all(:id => @user.visible_stream_item_instances.last.stream_item_id)
     json = api_call(:get, "/api/v1/users/activity_stream.json",
                     { :controller => "users", :action => "activity_stream", :format => 'json' })
     json.size.should == 1
@@ -64,6 +70,7 @@ describe UsersController, :type => :integration do
       'updated_at' => StreamItem.last.updated_at.as_json,
       'require_initial_post' => true,
       'user_has_posted' => true,
+      'html_url' => "http://www.example.com/courses/#{@context.id}/discussion_topics/#{@topic.id}",
 
       'total_root_discussion_entries' => 1,
       'root_discussion_entries' => [
@@ -73,6 +80,34 @@ describe UsersController, :type => :integration do
         },
       ],
       'course_id' => @course.id,
+    }]
+  end
+
+  it "should format DiscussionTopic for a CollectionItem" do
+    @item = collection_item_model
+    @item.discussion_topic.save!
+    @item.discussion_topic.discussion_subentries.create!(:message => "test", :user => @user, :discussion_topic => @item.discussion_topic)
+    json = api_call(:get, "/api/v1/users/activity_stream.json",
+                    { :controller => "users", :action => "activity_stream", :format => 'json' })
+    json.should == [{
+      'id' => StreamItem.last.id,
+      'title' => "No Title",
+      'message' => nil,
+      'type' => 'DiscussionTopic',
+      'context_type' => "CollectionItem",
+      'created_at' => StreamItem.last.created_at.as_json,
+      'updated_at' => StreamItem.last.updated_at.as_json,
+      'require_initial_post' => nil,
+      'user_has_posted' => nil,
+
+      'total_root_discussion_entries' => 1,
+      'root_discussion_entries' => [
+        {
+          'user' => { 'user_id' => @user.id, 'user_name' => 'User' },
+          'message' => 'test',
+        },
+      ],
+      'collection_item_id' => @item.id,
     }]
   end
 
@@ -127,6 +162,7 @@ describe UsersController, :type => :integration do
       'updated_at' => StreamItem.last.updated_at.as_json,
       'require_initial_post' => nil,
       'user_has_posted' => nil,
+      'html_url' => "http://www.example.com/courses/#{@context.id}/announcements/#{@a.id}",
 
       'total_root_discussion_entries' => 1,
       'root_discussion_entries' => [
@@ -156,6 +192,7 @@ describe UsersController, :type => :integration do
       'message' => nil,
 
       'private' => false,
+      'html_url' => "http://www.example.com/conversations/#{@conversation.id}",
 
       'participant_count' => 2
     }
@@ -176,6 +213,7 @@ describe UsersController, :type => :integration do
 
       'notification_category' => 'TestImmediately',
       'url' => nil,
+      'html_url' => nil,
     }]
   end
 
@@ -190,6 +228,7 @@ describe UsersController, :type => :integration do
     @sub.save!
     json = api_call(:get, "/api/v1/users/activity_stream.json",
                     { :controller => "users", :action => "activity_stream", :format => 'json' })
+
     json.should == [{
       'id' => StreamItem.last.id,
       'title' => "assignment 1",
@@ -199,23 +238,66 @@ describe UsersController, :type => :integration do
       'updated_at' => StreamItem.last.updated_at.as_json,
       'grade' => '12',
       'score' => 12,
+      'html_url' => "http://www.example.com/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@user.id}",
+      'workflow_state' => 'graded',
 
       'assignment' => {
         'title' => 'assignment 1',
         'id' => @assignment.id,
         'points_possible' => 14.2,
+        'assignment_group_id' => @assignment.assignment_group.id,
+        'course_id' => @course.id,
+        'description' => @assignment.description,
+        'due_at' => @assignment.due_at,
+        'grading_type' => @assignment.grading_type,
+        'group_category_id' => nil,
+        'html_url' => "http://www.example.com/courses/#{@course.id}/assignments/#{@assignment.id}",
+        'muted' => @assignment.muted,
+        'name' => @assignment.title,
+        'position' => @assignment.position,
+        'submission_types' => ['online_text_entry']
       },
-      
+
+      'assignment_id' => @assignment.id,
+      'attempt' => nil,
+      'body' => nil,
+      'grade_matches_current_submission' => true,
+      'preview_url' => "http://www.example.com/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@user.id}?preview=1",
+      'submission_type' => nil,
+      'submitted_at' => nil,
+      'url' => nil,
+      'user_id' => @sub.user_id,
+
       'submission_comments' => [{
-        'body' => '<p>c1</p>',
-        'user_name' => 'teacher',
-        'user_id' => @teacher.id,
+        'body' => 'c1',
+        'comment' => 'c1',
+        'author_name' => 'teacher',
+        'author_id' => @teacher.id,
+        'created_at' => @sub.submission_comments[0].created_at.as_json,
       },
       {
-        'body' => '<p>c2</p>',
-        'user_name' => 'User',
-        'user_id' => @user.id,
+        'body' => 'c2',
+        'comment' => 'c2',
+        'author_name' => 'User',
+        'author_id' => @user.id,
+        'created_at' => @sub.submission_comments[1].created_at.as_json,
       },],
+
+      'course' => {
+        'name' => @course.name,
+        'end_at' => @course.end_at,
+        'account_id' => @course.account_id,
+        'start_at' => @course.start_at.as_json,
+        'id' => @course.id,
+        'course_code' => @course.course_code,
+        'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/course_#{@course.uuid}.ics" },
+        'hide_final_grades' => false,
+        'html_url' => course_url(@course, :host => HostUrl.context_host(@course)),
+      },
+
+      'user' => {
+        "name"=>"User", "sortable_name"=>"User", "id"=>@sub.user_id, "short_name"=>"User"
+      },
 
       'context_type' => 'Course',
       'course_id' => @course.id,
@@ -242,29 +324,72 @@ describe UsersController, :type => :integration do
       'updated_at' => StreamItem.last.updated_at.as_json,
       'grade' => nil,
       'score' => nil,
+      'html_url' => "http://www.example.com/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@user.id}",
+      'workflow_state' => 'unsubmitted',
 
       'assignment' => {
         'title' => 'assignment 1',
         'id' => @assignment.id,
         'points_possible' => 14.2,
+        'assignment_group_id' => @assignment.assignment_group.id,
+        'course_id' => @course.id,
+        'description' => @assignment.description,
+        'due_at' => @assignment.due_at,
+        'grading_type' => @assignment.grading_type,
+        'group_category_id' => nil,
+        'html_url' => "http://www.example.com/courses/#{@course.id}/assignments/#{@assignment.id}",
+        'muted' => @assignment.muted,
+        'name' => @assignment.title,
+        'position' => @assignment.position,
+        'submission_types' => ['online_text_entry']
       },
-      
+
+      'assignment_id' => @assignment.id,
+      'attempt' => nil,
+      'body' => nil,
+      'grade_matches_current_submission' => nil,
+      'preview_url' => "http://www.example.com/courses/#{@course.id}/assignments/#{@assignment.id}/submissions/#{@user.id}?preview=1",
+      'submission_type' => nil,
+      'submitted_at' => nil,
+      'url' => nil,
+      'user_id' => @sub.user_id,
+
       'submission_comments' => [{
-        'body' => '<p>c1</p>',
-        'user_name' => 'teacher',
-        'user_id' => @teacher.id,
+        'body' => 'c1',
+        'comment' => 'c1',
+        'author_name' => 'teacher',
+        'author_id' => @teacher.id,
+        'created_at' => @sub.submission_comments[0].created_at.as_json,
       },
       {
-        'body' => '<p>c2</p>',
-        'user_name' => 'User',
-        'user_id' => @user.id,
+        'body' => 'c2',
+        'comment' => 'c2',
+        'author_name' => 'User',
+        'author_id' => @user.id,
+        'created_at' => @sub.submission_comments[1].created_at.as_json,
       },],
+
+      'course' => {
+        'name' => @course.name,
+        'end_at' => @course.end_at,
+        'account_id' => @course.account_id,
+        'start_at' => @course.start_at.as_json,
+        'id' => @course.id,
+        'course_code' => @course.course_code,
+        'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/course_#{@course.uuid}.ics" },
+        'hide_final_grades' => false,
+        'html_url' => course_url(@course, :host => HostUrl.context_host(@course)),
+      },
+
+      'user' => {
+        "name"=>"User", "sortable_name"=>"User", "id"=>@sub.user_id, "short_name"=>"User"
+      },
 
       'context_type' => 'Course',
       'course_id' => @course.id,
     }]
   end
-  
+
   it "should format graded Submission without comments" do
     @assignment = @course.assignments.create!(:title => 'assignment 1', :description => 'hai', :points_possible => '14.2', :submission_types => 'online_text_entry')
     @teacher = User.create!(:name => 'teacher')
@@ -274,27 +399,13 @@ describe UsersController, :type => :integration do
     @sub.save!
     json = api_call(:get, "/api/v1/users/activity_stream.json",
                     { :controller => "users", :action => "activity_stream", :format => 'json' })
-    json.should == [{
-      'id' => StreamItem.last.id,
-      'title' => "assignment 1",
-      'message' => nil,
-      'type' => 'Submission',
-      'created_at' => StreamItem.last.created_at.as_json,
-      'updated_at' => StreamItem.last.updated_at.as_json,
-      'grade' => '12',
-      'score' => 12,
 
-      'assignment' => {
-        'title' => 'assignment 1',
-        'id' => @assignment.id,
-        'points_possible' => 14.2,
-      },
-
-      'context_type' => 'Course',
-      'course_id' => @course.id,
-    }]
+    json[0]['grade'].should == '12'
+    json[0]['score'].should == 12
+    json[0]['workflow_state'].should == 'graded'
+    json[0]['submission_comments'].should == []
   end
-  
+
   it "should not format ungraded Submission without comments" do
     @assignment = @course.assignments.create!(:title => 'assignment 1', :description => 'hai', :points_possible => '14.2', :submission_types => 'online_text_entry')
     @teacher = User.create!(:name => 'teacher')
@@ -317,6 +428,9 @@ describe UsersController, :type => :integration do
       'title' => "hey",
       'message' => nil,
       'type' => 'Collaboration',
+      'context_type' => 'Course',
+      'course_id' => @course.id,
+      'html_url' => "http://www.example.com/courses/#{@course.id}/collaborations/#{@collaboration.id}",
       'created_at' => StreamItem.last.created_at.as_json,
       'updated_at' => StreamItem.last.updated_at.as_json,
     }]
@@ -326,7 +440,7 @@ describe UsersController, :type => :integration do
     WebConference.stubs(:plugins).returns(
         [OpenObject.new(:id => "big_blue_button", :settings => {:domain => "bbb.instructure.com", :secret_dec => "secret"}, :valid_settings? => true, :enabled? => true),]
     )
-    @conference = BigBlueButtonConference.create!(:title => 'myconf', :user => @user, :description => 'mydesc', :conference_type => 'big_blue_button')
+    @conference = BigBlueButtonConference.create!(:title => 'myconf', :user => @user, :description => 'mydesc', :conference_type => 'big_blue_button', :context => @course)
     json = api_call(:get, "/api/v1/users/activity_stream.json",
                     { :controller => "users", :action => "activity_stream", :format => 'json' })
     json.should == [{
@@ -335,8 +449,56 @@ describe UsersController, :type => :integration do
       'title' => "myconf",
       'type' => 'WebConference',
       'message' => 'mydesc',
+      'context_type' => 'Course',
+      'course_id' => @course.id,
+      'html_url' => "http://www.example.com/courses/#{@course.id}/conferences/#{@conference.id}",
       'created_at' => StreamItem.last.created_at.as_json,
       'updated_at' => StreamItem.last.updated_at.as_json,
+    }]
+  end
+
+  it "should format CollectionItem" do
+    @user1 = @user
+    group_with_user
+    @user2 = @user
+    @user = @user1
+    @coll = @group.collections.create!
+    UserFollow.create_follow(@user1, @coll)
+    @item = collection_item_model(:collection => @coll, :user => @user2)
+
+    json = api_call(:get, "/api/v1/users/activity_stream.json",
+                    { :controller => "users", :action => "activity_stream", :format => 'json' })
+    json.should == [{
+      'id' => StreamItem.last.id,
+      'title' => @item.data.title,
+      'type' => 'CollectionItem',
+      'message' => @item.data.description,
+      'created_at' => StreamItem.last.created_at.as_json,
+      'updated_at' => StreamItem.last.updated_at.as_json,
+      'collection_item' => {
+        'id' => @item.id,
+        'collection_id' => @item.collection_id,
+        'user' => {
+          'id' => @item.user.id,
+          'display_name' => @item.user.short_name,
+          'avatar_image_url' => "http://www.example.com/images/messages/avatar-50.png",
+          'html_url' => (@item.user == @user) ? "http://www.example.com/profile" : "http://www.example.com/users/#{@item.user.id}",
+        },
+        'item_type' => @item.collection_item_data.item_type,
+        'link_url' => @item.collection_item_data.link_url,
+        'post_count' => @item.collection_item_data.post_count,
+        'upvote_count' => @item.collection_item_data.upvote_count,
+        'upvoted_by_user' => false,
+        'root_item_id' => @item.collection_item_data.root_item_id,
+        'image_url' => "http://www.example.com/images/thumbnails/#{@item.data.image_attachment.id}/#{@item.data.image_attachment.uuid}?size=640x%3E",
+        'image_pending' => @item.data.image_pending,
+        'html_preview' => @item.data.html_preview,
+        'user_comment' => @item.user_comment,
+        'url' => "http://www.example.com/api/v1/collections/items/#{@item.id}",
+        'created_at' => @item.created_at.iso8601,
+        'description' => @item.data.description,
+        'title' => @item.data.title,
+      }
     }]
   end
 
@@ -350,11 +512,41 @@ describe UsersController, :type => :integration do
     json = api_call(:get, "/api/v1/users/activity_stream.json",
                     { :controller => "users", :action => "activity_stream", :format => 'json' })
     json.size.should == 2
+    response.headers['Link'].should be_present
+
+    json = api_call(:get, "/api/v1/users/activity_stream.json?per_page=1",
+                    { :controller => "users", :action => "activity_stream", :format => 'json', :per_page => '1' })
+    json.size.should == 1
+    response.headers['Link'].should be_present
 
     json = api_call(:get, "/api/v1/courses/#{@course2.id}/activity_stream.json",
                     { :controller => "courses", :action => "activity_stream", :course_id => @course2.to_param, :format => 'json' })
     json.size.should == 1
     json.first['discussion_topic_id'].should == @topic2.id
+    response.headers['Link'].should be_present
+  end
+
+  it "should return the group-specific activity stream" do
+    group_with_user
+    @group1 = @group
+    group_with_user(:user => @user)
+    @group2 = @group
+
+    @context = @group1
+    @topic1 = discussion_topic_model
+    @context = @group2
+    @topic2 = discussion_topic_model
+
+    json = api_call(:get, "/api/v1/users/activity_stream.json",
+                    { :controller => "users", :action => "activity_stream", :format => 'json' })
+    json.size.should == 2
+    response.headers['Link'].should be_present
+
+    json = api_call(:get, "/api/v1/groups/#{@group1.id}/activity_stream.json",
+                    { :controller => "groups", :action => "activity_stream", :group_id => @group1.to_param, :format => 'json' })
+    json.size.should == 1
+    json.first['discussion_topic_id'].should == @topic1.id
+    response.headers['Link'].should be_present
   end
 end
 

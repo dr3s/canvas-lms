@@ -30,7 +30,7 @@ class StreamItem < ActiveRecord::Base
   def stream_data(viewing_user_id)
     res = data.is_a?(OpenObject) ? data : OpenObject.new
     res.assert_hash_data
-    res.user_id ||= viewing_user_id
+    res.user_id ||= viewing_user_id unless res.type == 'DiscussionTopic'
     post_process(res, viewing_user_id)
   end
   
@@ -145,14 +145,16 @@ class StreamItem < ActiveRecord::Base
       res = prepare_conversation(object)
     when Message
       res = object.attributes
-      res['notification_category'] = object.notification_category
-      if object.asset_context_type
+      res['notification_category'] = object.notification_display_category
+      if !object.context.is_a?(Context) && object.context.respond_to?(:context) && object.context.context.is_a?(Context)
+        self.context_code = object.context.context.asset_string
+      elsif object.asset_context_type
         self.context_code = "#{object.asset_context_type.underscore}_#{object.asset_context_id}"
       end
     when Submission
       res = object.attributes
       res.delete 'body' # this can be pretty large, and we don't display it
-      res['assignment'] = object.assignment.attributes.slice('id', 'title', 'due_at', 'points_possible', 'submission_types')
+      res['assignment'] = object.assignment.attributes.slice('id', 'title', 'due_at', 'points_possible', 'submission_types', 'group_category_id')
       res[:submission_comments] = object.submission_comments.map do |comment|
         hash = comment.attributes
         hash['formatted_body'] = comment.formatted_body(250)
@@ -160,12 +162,15 @@ class StreamItem < ActiveRecord::Base
         hash['user_short_name'] = comment.author.short_name if comment.author
         hash
       end
+      res[:course_id] = object.context.id
     when Collaboration
       res = object.attributes
       res['users'] = object.users.map{|u| prepare_user(u)}
     when WebConference
       res = object.attributes
       res['users'] = object.users.map{|u| prepare_user(u)}
+    when CollectionItem
+      res = object.attributes
     else
       raise "Unexpected stream item type: #{object.class.to_s}"
     end
@@ -214,12 +219,14 @@ class StreamItem < ActiveRecord::Base
 
     # Then insert a StreamItemInstance for each user in user_ids
     instance_ids = []
-    StreamItemInstance.transaction do
-      user_ids.each do |user_id|
-        i = res.stream_item_instances.build(:user_id => user_id)
-        i.hidden = object.class == Submission && object.assignment.muted? ? true : false
-        i.save
-        instance_ids << i.id
+    Shard.partition_by_shard(user_ids) do |user_ids_subset|
+      StreamItemInstance.transaction do
+        user_ids_subset.each do |user_id|
+          i = StreamItemInstance.create(:user_id => user_id, :stream_item => res) do |sii|
+            sii.hidden = object.class == Submission && object.assignment.muted? ? true : false
+          end
+          instance_ids << i.id
+        end
       end
     end
     smallest_generated_id = instance_ids.min || 0
@@ -253,6 +260,15 @@ class StreamItem < ActiveRecord::Base
     object = object.submission if object.is_a?(SubmissionComment)
     object = object.conversation if object.is_a?(ConversationMessage)
     object
+  end
+
+  # call destroy_stream_items using a before_date based on the global setting
+  def self.destroy_stream_items_using_setting
+    ttl = Setting.get('stream_items_ttl', 4.weeks.to_s).ago
+    # we pass false for the touch_users argument, on the assumption that these
+    # stream items that we delete aren't visible on the user's dashboard anymore
+    # anyway, so there's no need to invalidate all the caches.
+    destroy_stream_items(ttl, false)
   end
 
   # delete old stream items and the corresponding instances before a given date

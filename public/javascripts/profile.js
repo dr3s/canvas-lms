@@ -15,30 +15,46 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+define([
+  'INST' /* INST */,
+  'i18n!profile',
+  'jquery' /* $ */,
+  'compiled/util/BackoffPoller',
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_date_and_time' /* parseFromISO, time_field, datetime_field */,
+  'jquery.instructure_forms' /* formSubmit, formErrors, errorBox */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* confirmDelete, fragmentChange, showIf */,
+  'jquery.loadingImg' /* loadingImage */,
+  'jquery.templateData' /* fillTemplateData */,
+  'jqueryui/sortable' /* /\.sortable/ */,
+  'compiled/jquery.rails_flash_notifications'
+], function(INST, I18n, $, BackoffPoller) {
 
-require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
-  I18n = I18n.scoped('profile');
+  var $edit_settings_link = $(".edit_settings_link");
 
   var $profile_table = $(".profile_table"),
       $update_profile_form = $("#update_profile_form"),
       $default_email_id = $("#default_email_id"),
-      profile_pics_url = $(".profile_pics_url").attr('href');
+      profile_pics_url = '/api/v1/users/self/avatars';
 
   var thumbnailPoller = new BackoffPoller(profile_pics_url, function(data) {
     var loadedImages = {},
         $images = $('img.pending'),
         image,
         $image,
+        associatedUrl,
         count = 0;
     for (var i = 0, l = data.length; i < l; i++) {
       image = data[i];
-      if (!image.pending) loadedImages[image.url] = true;
+      if (!image.pending) loadedImages[image.token] = image.url;
     }
     $images.each(function() {
       $image = $(this);
-      if (loadedImages[$image.data('eventual_src')]) {
+      associatedUrl = loadedImages[$image.data('token')]
+      if (associatedUrl != null) {
         $image.removeClass('pending');
-        $image.attr('src', $image.data('eventual_src'));
+        $image.attr('src', associatedUrl);
         count++;
       }
     });
@@ -47,14 +63,16 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
     return 'continue';
   });
   
-  $(".edit_profile_link").click(function(event) {
+  $edit_settings_link.click(function(event) {
+    $(this).hide();
     $profile_table.addClass('editing')
       .find(".edit_data_row").show().end()
       .find(":text:first").focus().select();
-    return false;
+  return false;
   });
   
   $profile_table.find(".cancel_button").click(function(event) {
+    $edit_settings_link.show();
     $profile_table
       .removeClass('editing')
       .find(".change_password_row,.edit_data_row,.more_options_row").hide().end()
@@ -75,7 +93,7 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
         $profile_table.find(".change_password_row").hide().find(":password").val("");
       } else {
         $(this).addClass('showing');
-        $profile_table.find(".change_password_row").show().find(":password:first").focus().select();
+        $profile_table.find(".change_password_row").show().find("#old_password").focus().select();
       }
     })
     .attr('checked', false)
@@ -84,12 +102,27 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
   $update_profile_form
     .attr('method', 'PUT')
     .formSubmit({
-      required: ['name'],
+      required: ($update_profile_form.find('#user_name').length ? ['name'] : []),
       object_name: 'user',
       property_validations: {
         '=default_email_id': function(val, data) {
           if($("#default_email_id").length && (!val || val == "new")) {
             return I18n.t('please_select_an_option', "Please select an option");
+          }
+        },
+        'birthdate(1i)': function(val, data) {
+          if (!val && (data['birthdate(2i)'] || data['birthdate(3i)'])) {
+            return I18n.t('please_select_a_year', "Please select a year");
+          }
+        },
+        'birthdate(2i)': function(val, data) {
+          if (!val && (data['birthdate(1i)'] || data['birthdate(3i)'])) {
+            return I18n.t('please_select_a_month', "Please select a month");
+          }
+        },
+        'birthdate(3i)': function(val, data) {
+          if (!val && (data['birthdate(1i)'] || data['birthdate(2i)'])) {
+            return I18n.t('please_select_a_day', "Please select a day");
           }
         }
       },
@@ -103,6 +136,7 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
           full_name: user.name,
           sortable_name: user.sortable_name,
           time_zone: user.time_zone,
+          birthdate: (user.birthdate ? $.parseFromISO(user.birthdate).date_formatted : '-'),
           locale: $("#user_locale option[value='" + user.locale + "']").text()
         };
         if (templateData.locale != $update_profile_form.find('.locale').text()) {
@@ -122,7 +156,7 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
       },
       error: function(data) {
         $update_profile_form.loadingImage('remove').formErrors(data.errors || data);
-        $(".edit_profile_link").click();
+        $edit_settings_link.click();
       }
     })
     .find(".more_options_link").click(function() {
@@ -139,10 +173,9 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
   
   $("#unregistered_services li.service").click(function(event) {
     event.preventDefault();
-    $("#" + $(this).attr('id') + "_dialog").dialog('close').dialog({
-      width: 350,
-      autoOpen: false
-    }).dialog('open');
+    $("#" + $(this).attr('id') + "_dialog").dialog({
+      width: 350
+    });
   });
   $(".create_user_service_form").formSubmit({
     object_name: 'user_service',
@@ -178,7 +211,7 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
     $(this).removeClass('service-hover');
   });
   $("#show_user_services").change(function() {
-    $.ajaxJSON($("#update_profile_form").attr('action'), 'PUT', {'user[show_user_services]': $(this).attr('checked')}, function(data) {
+    $.ajaxJSON($("#update_profile_form").attr('action'), 'PUT', {'user[show_user_services]': $(this).prop('checked')}, function(data) {
     }, function(data) {
     });
   });
@@ -262,10 +295,9 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
     event.preventDefault();
     var $dialog = $("#token_details_dialog");
     var url = $(this).attr('rel');
-    $dialog.dialog('close').dialog({
-      autoOpen: false,
+    $dialog.dialog({
       width: 600
-    }).dialog('open');
+    });
     var $token = $(this).parents(".access_token");
     $dialog.data('token', $token);
     $dialog.find(".loading_message").show().end()
@@ -327,6 +359,15 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
   });
   $("#add_pic_form").formSubmit({
     fileUpload: true,
+    fileUploadOptions: {
+      preparedFileUpload: true,
+      upload_only: true,
+      singleFile: true,
+      context_code: ENV.context_asset_string,
+      folder_id: ENV.folder_id,
+      formDataTarget: 'uploadDataUrl'
+    },
+
     beforeSubmit: function() {
       $(this).find("button").attr('disabled', true).text(I18n.t('buttons.adding_file', "Adding File..."));
       var $span = $("<span class='img'><img/></span>");
@@ -336,23 +377,34 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
       $("#profile_pic_dialog .profile_pic_list div").before($span);
       return $span;
     },
+
     success: function(data, $span) {
-      $(this).find("button").attr('disabled', false).text(I18n.t('buttons.add_file', "Add File"));
-      $("#add_pic_form").slideToggle();
-      var attachment = data.attachment;
+      var attachment = data.attachment,
+          avatar     = data.avatar,
+          addPicForm = $('#add_pic_form')
+
+      $(this).find('button')
+        .prop('disabled', false)
+        .text(I18n.t('buttons.add_file', 'Add File'));
+
+      addPicForm.slideToggle();
+
       if ($span) {
-        var $img = $span.find("img");
-        $img.data('eventual_src', '/images/thumbnails/' + attachment.id + '/' + attachment.uuid);
-        $img.attr('data-type', 'attachment');
-        $img.attr('alt', attachment.display_name);
+        var $img = $span.find('img');
+
+        $img
+          .data('type', 'attachment')
+          .data('token', data.avatar.token)
+          .attr('alt', attachment.display_name);
+
         $img[0].onerror = function() {
           $img.attr('src', '/images/dotted_pic.png');
         }
-        thumbnailPoller.start().then(function() {
-          $img.click();
-        });
+
+        thumbnailPoller.start().then(function() { $img.click(); });
       }
     },
+
     error: function(data, $span) {
       $(this).find("button").attr('disabled', false).text(I18n.t('errors.adding_file_failed', "Adding File Failed"));
       if ($span) {
@@ -360,43 +412,61 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
       }
     }
   });
+
   $("#profile_pic_dialog .cancel_button").click(function() {
     $("#profile_pic_dialog").dialog('close');
   });
+
   $("#profile_pic_dialog .select_button").click(function() {
-    var url = $("#update_profile_form").attr('action');
-    var $dialog = $("#profile_pic_dialog");
-    $dialog.find("button").attr('disabled', true).filter(".select_button").text(I18n.t('buttons.selecting_image', "Selecting Image..."));
-    var $img = $("#profile_pic_dialog .profile_pic_list .img.selected img");
-    if($img.length == 0) {
-      return;
-    }
-    var src = $img.attr('src');
-    var data = {
-      'user[avatar_image][url]': src,
-      'user[avatar_image][type]': $img.attr('data-type')
-    };
-    $.ajaxJSON(url, 'PUT', data, function(data) {
-      $dialog.find("button").attr('disabled', false).filter(".select_button").text(I18n.t('buttons.select_image', "Select Image"));
-      var user = data.user;
-      if(user.avatar_url == '/images/no_pic.gif') {
+    var url = '/api/v1/users/self',
+        $dialog = $('#profile_pic_dialog'),
+        $buttons = $dialog.find('button'),
+        $img = $('#profile_pic_dialog .profile_pic_list .img.selected img'),
+        data = { 'user[avatar][token]': $img.data('token') }
+
+    $buttons
+      .prop('disabled', true)
+      .filter('.select_button')
+      .text(I18n.t('buttons.selecting_image', 'Selecting Image...'));
+
+    if ($img.length === 0) { return; }
+
+    $.ajaxJSON(url, 'PUT', data, function(user) {
+      // on success
+      var profilePicLink = $('.profile_pic_link img'),
+          newSrc = $('#profile_pic_dialog .img.selected img').attr('src');
+
+      $buttons
+        .prop('disabled', false)
+        .filter('.select_button')
+        .text(I18n.t('buttons.select_image', 'Select Image'));
+
+      if (user.avatar_url === '/images/no_pic.gif') {
         user.avatar_url = '/images/dotted_pic.png';
       }
-      $(".profile_pic_link img").attr('src', user.avatar_url);
+
+      profilePicLink.attr('src', newSrc);
       $dialog.dialog('close');
-    }, function(data) {
-      $dialog.find("button").attr('disabled', false).filter(".select_button").text(I18n.t('errors.selecting_image_failed', "Selecting Image Failed, please try again"));
+    }, function(response) {
+      // on error
+      $buttons
+        .prop('disabled', false)
+        .filter('.select_button')
+        .text(I18n.t('errors.selecting_image_failed', 'Selecting image failed, please try again'));
     });
   });
+
   $(".profile_pic_link").click(function(event) {
     event.preventDefault();
     var $dialog = $("#profile_pic_dialog");
     $dialog.find(".img.selected").removeClass('selected');
-    $dialog.find(".select_button").attr('disabled', true);
+    $dialog.find(".select_button").prop('disabled', true);
+
     if($(this).hasClass('locked')) {
       alert(I18n.t('alerts.profile_picture_locked', "Your profile picture has been locked by an administrator, and cannot be changed."));
       return;
     }
+
     if(!$dialog.hasClass('loaded')) {
       $dialog.find(".profile_pic_list h3").text(I18n.t('headers.loading_images', "Loading Images..."));
       $.ajaxJSON(profile_pics_url, 'GET', {}, function(data) {
@@ -405,23 +475,28 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
           $dialog.find(".profile_pic_list h3").remove();
           var pollThumbnails = false;
           for(var idx in data) {
-            var image = data[idx];
-            var $span = $("<span class='img'><img/></span>");
-            $img = $span.find("img");
+            var image = data[idx],
+                $span = $('<span />', { 'class': 'img' }),
+                $img  = $('<img />').appendTo($span);
+
             if (image.pending) {
-              $img.addClass('pending');
-              $img.attr('src', '/images/ajax-loader.gif');
-              $img.data('eventual_src', image.url);
+              $img
+                .addClass('pending')
+                .attr('src', '/images/ajax-loader.gif')
+                .data('token', image.token);
               pollThumbnails = true;
             } else {
-              $img.attr('src', image.url);
+              $img
+                .attr('src', image.url)
+                .data('token', image.token);
             }
-            $img.attr('alt', image.alt || image.type);
-            $img.attr('title', image.alt || image.type);
-            $img.attr('data-type', image.type);
-            $img[0].onerror = function() {
-              $span.remove();
-            }
+            $img
+              .data('token', image.token)
+              .attr('alt', image.display_name || image.type)
+              .attr('title', image.display_name || image.type)
+              .attr('data-type', image.type);
+
+            $img[0].onerror = $span.remove.bind($span, null);
             $dialog.find(".profile_pic_list div").before($span);
           }
           if (pollThumbnails) thumbnailPoller.start();
@@ -432,12 +507,11 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
         $dialog.find(".profile_pic_list h3").text(I18n.t('errors.loading_images_failed', "Loading Images Failed, please try again"));
       });
     }
-    $("#profile_pic_dialog").dialog('close').dialog({
-      autoOpen: false,
+    $("#profile_pic_dialog").dialog({
       title: I18n.t('titles.select_profile_pic', "Select Profile Pic"),
       width: 500,
       height: 300
-    }).dialog('open');
+    });
   });
   var checkImage = function() {
     var img = $(".profile_pic_link img")[0];
@@ -452,4 +526,13 @@ require(['compiled/util/BackoffPoller', 'i18n'], function(BackoffPoller, I18n) {
     }
   };
   setTimeout(checkImage, 500);
+
+  $("#disable_mfa_link").click(function(event) {
+    var $disable_mfa_link = $(this);
+    $.ajaxJSON($disable_mfa_link.attr('href'), 'DELETE', null, function() {
+      $.flashMessage(I18n.t('notices.mfa_disabled', "Multi-factor authentication disabled"));
+      $disable_mfa_link.remove();
+    });
+    event.preventDefault();
+  });
 });

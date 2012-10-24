@@ -516,4 +516,76 @@ describe Api do
 
   end
 
+  context ".api_user_content" do
+    class T
+      extend Api
+    end
+    it "should ignore non-kaltura instructure_inline_media_comment links" do
+      student_in_course
+      html = %{<div>This is an awesome youtube:
+<a href="http://www.example.com/" class="instructure_inline_media_comment">here</a>
+</div>}
+      res = T.api_user_content(html, @course, @student)
+      res.should == html
+    end
+  end
+
+  context ".build_links" do
+    it "should not build links if not pagination is provided" do
+      Api.build_links("www.example.com").should be_empty
+    end
+
+    it "should not build links for empty pages" do
+      Api.build_links("www.example.com/", {
+        :per_page => 10,
+        :next => "",
+        :prev => "",
+        :first => "",
+        :last => "",
+      }).should be_empty
+    end
+
+    it "should build next, prev, first, and last links if provided" do
+      links = Api.build_links("www.example.com/", {
+        :per_page => 10,
+        :next => 4,
+        :prev => 2,
+        :first => 1,
+        :last => 10,
+      })
+      links.all?{ |l| l =~ /www.example.com\/\?/ }.should be_true
+      links.find{ |l| l.match(/rel="next"/)}.should =~ /page=4&per_page=10>/
+      links.find{ |l| l.match(/rel="prev"/)}.should =~ /page=2&per_page=10>/
+      links.find{ |l| l.match(/rel="first"/)}.should =~ /page=1&per_page=10>/
+      links.find{ |l| l.match(/rel="last"/)}.should =~ /page=10&per_page=10>/
+    end
+
+    it "should maintain query parameters" do
+      links = Api.build_links("www.example.com/", {
+        :query_parameters => { :search => "hihi" },
+        :per_page => 10,
+        :next => 2,
+      })
+      links.first.should == "<www.example.com/?search=hihi&page=2&per_page=10>; rel=\"next\""
+    end
+
+    it "should maintain array query parameters" do
+      links = Api.build_links("www.example.com/", {
+        :query_parameters => { :include => ["enrollments"] },
+        :per_page => 10,
+        :next => 2,
+      })
+      qs = "#{CGI.escape("include[]")}=enrollments"
+      links.first.should == "<www.example.com/?#{qs}&page=2&per_page=10>; rel=\"next\""
+    end
+
+    it "should not include certain sensitive params in the link headers" do
+      links = Api.build_links("www.example.com/", {
+        :query_parameters => { :access_token => "blah", :api_key => "xxx", :page => 3, :per_page => 10 },
+        :per_page => 10,
+        :next => 4,
+      })
+      links.first.should == "<www.example.com/?page=4&per_page=10>; rel=\"next\""
+    end
+  end
 end

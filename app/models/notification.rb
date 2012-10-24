@@ -49,11 +49,18 @@ class Notification < ActiveRecord::Base
     "Show In Feed",
     "Migration Import Finished",
     "Migration Import Failed",
+    "Appointment Group Published",
+    "Appointment Group Updated",
+    "Appointment Reserved For User",
   ].freeze
-  
+
+  FREQ_IMMEDIATELY = 'immediately'
+  FREQ_DAILY = 'daily'
+  FREQ_WEEKLY = 'weekly'
+  FREQ_NEVER = 'never'
+
   has_many :messages
   has_many :notification_policies, :dependent => :destroy
-  has_many :users, :through => :notification_policies
   before_save :infer_default_content
 
   attr_accessible  :name, :subject, :body, :sms_body, :main_link, :delay_for, :category
@@ -72,7 +79,21 @@ class Notification < ActiveRecord::Base
   end
   
   def self.summary_notification
-    find_by_name('Summaries')
+    by_name('Summaries')
+  end
+
+  def self.by_name(name)
+    @notifications ||= Notification.all.inject({}){ |h, n| h[n.name] = n; h }
+    if notification = @notifications[name]
+      copy = notification.clone
+      copy.id = notification.id
+      copy.send(:remove_instance_variable, :@new_record)
+      copy
+    end
+  end
+
+  def self.reset_cache!
+    @notifications = nil
   end
 
   def infer_default_content
@@ -93,18 +114,20 @@ class Notification < ActiveRecord::Base
 
     asset = opts[:asset] || raise(ArgumentError, "Must provide an asset")
 
-    policies = user.notification_policies.select{|p| p.notification_id == self.id && p.communication_channel_id}
-    policies << NotificationPolicy.create(:notification => self, :user => user, :communication_channel => cc, :frequency => self.default_frequency) if policies.empty? && cc && cc.active?
-    policies = policies.select{|p| [:daily,:weekly].include?(p.frequency.to_sym) } #NotificationPolicy.for(self).for(user).by([:daily, :weekly])
-    
+    policies = NotificationPolicy.for(user).for(self).to_a
+    policies << NotificationPolicy.create(:notification => self, :communication_channel => cc, :frequency => self.default_frequency) if policies.empty? && cc && cc.active?
+    policies = policies.select{|p| [:daily,:weekly].include?(p.frequency.to_sym) }
+
     # If we pass in a fallback_channel, that means this message has been
     # throttled, so it definitely needs to go to at least one communication
     # channel with 'daily' as the frequency.
     if !policies.any?{|p| p.frequency == 'daily'} && opts[:fallback_channel]
-      policies << NotificationPolicy.new(:user => user, :communication_channel => opts[:fallback_channel], :frequency => 'daily')
+      fallback_policy = opts[:fallback_channel].notification_policies.by(:daily).find(:first, :conditions => { :notification_id => nil })
+      fallback_policy ||= NotificationPolicy.new(:communication_channel => opts[:fallback_channel], :frequency => 'daily')
+      policies << fallback_policy
     end
 
-    return false if (!opts[:fallback_channel] && cc && !cc.active?) || policies.empty? || self.registration?
+    return false if (!opts[:fallback_channel] && cc && !cc.active?) || policies.empty? || !self.summarizable?
 
     policies.inject([]) do |list, policy|
       message = Message.new(
@@ -138,7 +161,10 @@ class Notification < ActiveRecord::Base
     current_locale = I18n.locale
 
     tos = tos.flatten.compact.uniq
-    options = tos.delete_at(tos.length - 1) if tos.last.is_a? Hash
+    if tos.last.is_a? Hash
+      options = tos.delete_at(tos.length - 1)
+      data = options.delete(:data)
+    end
     @delayed_messages_to_save = []
     recipient_ids = []
     recipients = []
@@ -159,11 +185,7 @@ class Notification < ActiveRecord::Base
       end
     end
     
-    recipients += User.find(:all, :conditions => {:id => recipient_ids}, :include => [:communication_channels, :notification_policies])
-    
-    # Cancel any that haven't been sent out for the same purpose
-    all_matching_messages = self.messages.for(asset).by_name(name).for_user(recipients).in_state([:created,:staged,:sending,:dashboard])
-    Message.update_all("workflow_state='cancelled'", "id IN (#{all_matching_messages.map(&:id).join(',')})") unless all_matching_messages.empty?
+    recipients += User.find(:all, :conditions => {:id => recipient_ids}, :include => { :communication_channels => :notification_policies})
     
     messages = []
     @user_counts = {}
@@ -175,17 +197,17 @@ class Notification < ActiveRecord::Base
         user = cc.user
       elsif recipient.is_a?(User)
         user = recipient
-        cc = user.communication_channels.first
+        cc = user.email_channel
       end
       I18n.locale = infer_locale(:user => user)
       
       # For non-essential messages, check if too many have gone out, and if so
       # send this message as a daily summary message instead of immediate.
-      too_many_and_summarizable = user && self.summarizable? && too_many_messages?(user)
+      should_summarize = user && self.summarizable? && too_many_messages?(user)
       channels = CommunicationChannel.find_all_for(user, self, cc)
       fallback_channel = channels.sort_by{|c| c.path_type }.first
-      record_delayed_messages((options || {}).merge(:user => user, :communication_channel => cc, :asset => asset, :fallback_channel => too_many_and_summarizable ? channels.first : nil))
-      if too_many_and_summarizable
+      record_delayed_messages((options || {}).merge(:user => user, :communication_channel => cc, :asset => asset, :fallback_channel => should_summarize ? channels.first : nil))
+      if should_summarize
         channels = channels.select{|cc| cc.path_type != 'email' && cc.path_type != 'sms' }
       end
       channels << "dashboard" if self.dashboard? && self.show_in_feed?
@@ -194,11 +216,12 @@ class Notification < ActiveRecord::Base
         to_path = c
         to_path = c.path if c.respond_to?("path")
 
-        message = self.messages.build(
+        message = (user || cc || self).messages.build(
           :subject => self.subject, 
-          :to => to_path
+          :to => to_path,
+          :notification => self
         )
-        
+
         message.body = self.body
         message.body = self.sms_body if c.respond_to?("path_type") && c.path_type == "sms"
         message.notification_name = self.name
@@ -209,6 +232,7 @@ class Notification < ActiveRecord::Base
         message.asset_context = options[:asset_context] || asset.context(user) rescue asset
         message.notification_category = self.category
         message.delay_for = self.delay_for if self.delay_for 
+        message.data = data if data
         message.parse!
         # keep track of new messages added for caching so we don't
         # have to re-look it up
@@ -231,7 +255,12 @@ class Notification < ActiveRecord::Base
       end
     end
 
-    dispatch_messages.each { |m| m.stage_without_dispatch!; m.save! }
+    Message.transaction do
+      # Cancel any that haven't been sent out for the same purpose
+      all_matching_messages = self.messages.for(asset).by_name(name).for_user(recipients).in_state([:created,:staged,:sending,:dashboard])
+      all_matching_messages.update_all(:workflow_state => 'cancelled')
+      dispatch_messages.each { |m| m.stage_without_dispatch!; m.save! }
+    end
     MessageDispatcher.batch_dispatch(dispatch_messages)
 
     # re-set cached values
@@ -252,7 +281,7 @@ class Notification < ActiveRecord::Base
     @user_counts[user.id] = all_messages
     for_category = recent_messages_for_user("#{user.id}_#{self.category_spaceless}") || 0
     @user_counts["#{user.id}_#{self.category_spaceless}"] = for_category
-    all_messages >= user.max_messages_per_day || (max_for_category && for_category >= max_for_category)
+    all_messages >= user.max_messages_per_day
   end
   
   # Cache the count for number of messages sent to a user/user-with-category,
@@ -279,42 +308,11 @@ class Notification < ActiveRecord::Base
       end
     end
   end
-  
-  # Maximum number of messages a user can receive per day per category
-  # These numbers are totally pulled out of the air
-  def max_for_category
-    case category
-    when 'Calendar'
-      5
-    when 'Course Content'
-      5
-    when 'Files'
-      5
-    when 'Discussion'
-      5
-    when 'DiscussionEntry'
-      5
-    when 'Due Date'
-      10
-    when 'Grading Policies'
-      3
-    when 'Membership Update'
-      5
-    when 'Student Message'
-      5
-    else
-      nil
-    end
-  end
-  
+
   def sort_order
     case category
-    when 'Message'
-      0
     when 'Announcement'
       1
-    when 'Student Message'
-      2
     when 'Grading'
       3
     when 'Late Grading'
@@ -337,23 +335,23 @@ class Notification < ActiveRecord::Base
   end
   
   def show_in_feed?
-   self.category == "TestImmediately" || Notification.types_to_show_in_feed.include?(self.name)
-  end
-  
-  def show_in_feed?
     self.category == "TestImmediately" || Notification.types_to_show_in_feed.include?(self.name)
   end
   
   def registration?
     return self.category == "Registration"
   end
+
+  def migration?
+    return self.category == "Migration"
+  end
   
   def summarizable?
-    return !self.registration? && self.category != 'Message'
+    return !self.registration? && !self.migration?
   end
   
   def dashboard?
-    return self.category != "Registration" && self.category != "Summaries"
+    return ["Migration", "Registration", "Summaries"].include?(self.category) == false
   end
   
   def category_slug
@@ -368,62 +366,88 @@ class Notification < ActiveRecord::Base
     Notification.find(:all).each do |n|
       if !seen_types[n.category] && (user.nil? || n.relevant_to_user?(user))
         seen_types[n.category] = true
-        res << n if n.category && n.category != "Registration" && n.category != 'Summaries'
+        res << n if n.category && n.dashboard?
       end
     end
     res.sort_by{|n| n.category == "Other" ? "zzzz" : n.category }
+  end
+
+  # Return a hash with information for a related user option if one exists.
+  def related_user_setting(user)
+    case self.category
+      when 'Submission Comment'
+        setting = {:name => :no_submission_comments_inbox, :value => user.preferences[:no_submission_comments_inbox],
+                   :label => t(:submission_new_as_read, 'Mark new submission comments as read.')}
+      when 'Grading'
+        setting = {:name => :send_scores_in_emails, :value => user.preferences[:send_scores_in_emails],
+                   :label => t(:grading_notify_include_grade, 'Include scores when alerting about grade changes.')}
+      else
+        nil
+    end
+    setting[:id] = "cat_#{self.id}_option" if setting
+    setting
   end
   
   def default_frequency
     case category
     when 'All Submissions'
-      'never'
+      FREQ_NEVER
     when 'Announcement'
-      'immediately'
+      FREQ_IMMEDIATELY
     when 'Calendar'
-      'never'
+      FREQ_NEVER
+    when 'Student Appointment Signups'
+      FREQ_NEVER
+    when 'Appointment Availability'
+      FREQ_IMMEDIATELY
+    when 'Appointment Signups'
+      FREQ_IMMEDIATELY
+    when 'Appointment Cancelations'
+      FREQ_IMMEDIATELY
     when 'Course Content'
-      'never'
+      FREQ_NEVER
     when 'Files'
-      'never'
+      FREQ_NEVER
     when 'Discussion'
-      'never'
+      FREQ_NEVER
     when 'DiscussionEntry'
-      'daily'
+      FREQ_DAILY
     when 'Due Date'
-      'weekly'
+      FREQ_WEEKLY
     when 'Grading'
-      'immediately'
+      FREQ_IMMEDIATELY
     when 'Grading Policies'
-      'weekly'
+      FREQ_WEEKLY
     when 'Invitation'
-      'immediately'
+      FREQ_IMMEDIATELY
     when 'Late Grading'
-      'daily'
+      FREQ_DAILY
     when 'Membership Update'
-      'daily'
-    when 'Student Message'
-      'daily'
-    when 'Message'
-      'immediately'
+      FREQ_DAILY
     when 'Other'
-      'daily'
+      FREQ_DAILY
     when 'Registration'
-      'immediately'
+      FREQ_IMMEDIATELY
+    when 'Migration'
+      FREQ_IMMEDIATELY
     when 'Submission Comment'
-      'daily'
+      FREQ_DAILY
     when 'Reminder'
-      'daily'
+      FREQ_DAILY
     when 'TestImmediately'
-      'immediately'
+      FREQ_IMMEDIATELY
     when 'TestDaily'
-      'daily'
+      FREQ_DAILY
     when 'TestWeekly'
-      'weekly'
+      FREQ_WEEKLY
     when 'TestNever'
-      'never'
+      FREQ_NEVER
+    when 'Conversation Message'
+      FREQ_IMMEDIATELY
+    when 'Added To Conversation'
+      FREQ_IMMEDIATELY
     else
-      'daily'
+      FREQ_DAILY
     end
   end
   
@@ -472,6 +496,7 @@ class Notification < ActiveRecord::Base
     t 'names.new_discussion_topic', 'New Discussion Topic'
     t 'names.new_event_created', 'New Event Created'
     t 'names.new_file_added', 'New File Added'
+    t 'names.new_files_added', 'New Files Added'
     t 'names.new_student_organized_group', 'New Student Organized Group'
     t 'names.new_teacher_registration', 'New Teacher Registration'
     t 'names.new_user', 'New User'
@@ -491,6 +516,13 @@ class Notification < ActiveRecord::Base
     t 'names.updated_wiki_page', 'Updated Wiki Page'
     t 'names.web_conference_invitation', 'Web Conference Invitation'
     t 'names.alert', 'Alert'
+    t 'names.appointment_canceled_by_user', 'Appointment Canceled By User'
+    t 'names.appointment_deleted_for_user', 'Appointment Deleted For User'
+    t 'names.appointment_group_deleted', 'Appointment Group Deleted'
+    t 'names.appointment_group_published', 'Appointment Group Published'
+    t 'names.appointment_group_updated', 'Appointment Group Updated'
+    t 'names.appointment_reserved_by_user', 'Appointment Reserved By User'
+    t 'names.appointment_reserved_for_user', 'Appointment Reserved For User'
   end
 
   # TODO: i18n ... show these anywhere we show the category today
@@ -498,6 +530,10 @@ class Notification < ActiveRecord::Base
     t 'categories.all_submissions', 'All Submissions'
     t 'categories.announcement', 'Announcement'
     t 'categories.calendar', 'Calendar'
+    t 'categories.student_appointment_signups', 'Student Appointment Signups'
+    t 'categories.appointment_availability', 'Appointment Availability'
+    t 'categories.appointment_signups', 'Appointment Signups'
+    t 'categories.appointment_cancelations', 'Appointment Cancelations'
     t 'categories.course_content', 'Course Content'
     t 'categories.discussion', 'Discussion'
     t 'categories.discussion_entry', 'DiscussionEntry'
@@ -508,12 +544,67 @@ class Notification < ActiveRecord::Base
     t 'categories.invitiation', 'Invitation'
     t 'categories.late_grading', 'Late Grading'
     t 'categories.membership_update', 'Membership Update'
-    t 'categories.message', 'Message'
     t 'categories.other', 'Other'
     t 'categories.registration', 'Registration'
+    t 'categories.migration', 'Migration'
     t 'categories.reminder', 'Reminder'
-    t 'categories.student_message', 'Student Message'
     t 'categories.submission_comment', 'Submission Comment'
+  end
+
+  # Translatable display text to use when representing the category to the user.
+  # NOTE: If you add a new notification category, update the mapping file for groupings to show up
+  #       on notification preferences page. /app/coffeescripts/notifications/NotificationGroupMappings.coffee
+  def category_display_name
+    case category
+      when 'Announcement'
+        t(:announcement_display, 'Announcement')
+      when 'Course Content'
+        t(:course_content_display, 'Course Content')
+      when 'Files'
+        t(:files_display, 'Files')
+      when 'Discussion'
+        t(:discussion_display, 'Discussion')
+      when 'DiscussionEntry'
+        t(:discussion_entry_display, 'Discussion Entry')
+      when 'Due Date'
+        t(:due_date_display, 'Due Date')
+      when 'Grading'
+        t(:grading_display, 'Grading')
+      when 'Late Grading'
+        t(:late_grading_display, 'Late Grading')
+      when 'All Submissions'
+        t(:all_submissions_display, 'All Submissions')
+      when 'Submission Comment'
+        t(:submission_comment_display, 'Submission Comment')
+      when 'Grading Policies'
+        t(:grading_policies_display, 'Grading Policies')
+      when 'Invitation'
+        t(:invitation_display, 'Invitation')
+      when 'Other'
+        t(:other_display, 'Administrative Notifications')
+      when 'Calendar'
+        t(:calendar_display, 'Calendar')
+      when 'Student Appointment Signups'
+        t(:student_appointment_display, 'Student Appointment Signups')
+      when 'Appointment Availability'
+        t(:appointment_availability_display, 'Appointment Availability')
+      when 'Appointment Signups'
+        t(:appointment_signups_display, 'Appointment Signups')
+      when 'Appointment Cancelations'
+        t(:appointment_cancelations_display, 'Appointment Cancelations')
+      when 'Conversation Message'
+        t(:conversation_message_display, 'Conversation Message')
+      when 'Added To Conversation'
+        t(:added_to_conversation_display, 'Added To Conversation')
+      when 'Alert'
+        t(:alert_display, 'Alert')
+      when 'Membership Update'
+        t(:membership_update_display, 'Membership Update')
+      when 'Reminder'
+        t(:reminder_display, 'Reminder')
+      else
+        t(:missing_display_display, "For %{category} notifications", :category => category)
+    end
   end
 
   def category_description
@@ -521,7 +612,7 @@ class Notification < ActiveRecord::Base
     when 'Announcement'
       t(:announcement_description, "For new announcements")
     when 'Course Content'
-      t(:course_content_description, "For changes to course pages")
+      t(:course_content_description, "For changes to course pages and assignments")
     when 'Files'
       t(:files_description, "For new files")
     when 'Discussion'
@@ -543,22 +634,42 @@ class Notification < ActiveRecord::Base
     when 'Invitation'
       t(:invitation_description, "For new invitations")
     when 'Other'
-      t(:other_description, "For any other notifications")
+      t(:other_description, "For administrative alerts")
     when 'Calendar'
       t(:calendar_description, "For calendar changes")
-    when 'Message'
-      t(:message_description, "For new email messages")
-    when 'Student Message'
-      t(:student_message_description, "For private messages from students")
+    when 'Student Appointment Signups'
+      t(:student_appointment_description, "For student appointment signups and cancelations")
+    when 'Appointment Availability'
+      t(:appointment_availability_description, "For changes to appointment time slots")
+    when 'Appointment Signups'
+      t(:appointment_signups_description, "For your new appointments")
+    when 'Appointment Cancelations'
+      t(:appointment_cancelations_description, "For canceled appointments")
     when 'Conversation Message'
       t(:conversation_message_description, "For new conversation messages")
     when 'Added To Conversation'
       t(:added_to_conversation_description, "For conversations to which you're added")
+    when 'Alert'
+      t(:alert_description, "For alert notifications")
+    when 'Membership Update'
+      t(:membership_update_description, "For membership change notifications")
+    when 'Reminder'
+      t(:reminder_description, "For reminder messages")
     else
       t(:missing_description_description, "For %{category} notifications", :category => category)
     end
   end
-  
+
+  def display_category
+    case category
+      when 'Student Appointment Signups', 'Appointment Availability',
+           'Appointment Signups', 'Appointment Cancelations'
+        'Calendar'
+      else
+        category
+    end
+  end
+
   def type_name
     return category
   end

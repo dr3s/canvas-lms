@@ -33,7 +33,7 @@ class ContentTag < ActiveRecord::Base
   validates_presence_of :context, :unless => proc { |tag| tag.context_id && tag.context_type }
   validates_length_of :comments, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
   before_save :default_values
-  after_save :enforce_unique_in_modules
+  after_save :update_could_be_locked
   after_save :touch_context_module
   after_save :touch_context_if_learning_outcome
   include CustomValidations
@@ -54,9 +54,10 @@ class ContentTag < ActiveRecord::Base
   named_scope :active, lambda{
     {:conditions => ['content_tags.workflow_state != ?', 'deleted'] }
   }
-  
+
+  attr_accessor :skip_touch
   def touch_context_module
-    ContentTag.touch_context_modules([self.context_module_id])
+    ContentTag.touch_context_modules([self.context_module_id]) unless skip_touch.present?
   end
   
   def self.touch_context_modules(ids=[])
@@ -65,7 +66,9 @@ class ContentTag < ActiveRecord::Base
   end
   
   def touch_context_if_learning_outcome
-    self.context_type.constantize.update_all({:updated_at => Time.now.utc}, {:id => self.context_id}) if self.tag_type == 'learning_outcome_association' || self.tag_type == 'learning_outcome'
+    if (self.tag_type == 'learning_outcome_association' || self.tag_type == 'learning_outcome') && skip_touch.blank?
+      self.context_type.constantize.update_all({:updated_at => Time.now.utc}, {:id => self.context_id}) 
+    end
   end
   
   def default_values
@@ -86,23 +89,25 @@ class ContentTag < ActiveRecord::Base
   def context_name
     self.context.name rescue ""
   end
-  
-  def enforce_unique_in_modules
-    if self.workflow_state != 'deleted' && self.content_id && self.content_id > 0 && self.tag_type == 'context_module' && self.content_type != 'ContextExternalTool'
-      tags = ContentTag.find_all_by_content_id_and_content_type_and_tag_type_and_context_id_and_context_type(self.content_id, self.content_type, 'context_module', self.context_id, self.context_type)
-      tags.select{|t| t != self }.each do |tag|
-        tag.destroy
-      end
-    end
-    if self.content_id && self.content_type
-      klass = self.content_type.constantize
-      if klass.new.respond_to?(:could_be_locked=)
-        self.content_type.constantize.update_all({:could_be_locked => true}, {:id => self.content_id}) rescue nil
-      end
-    end
+
+  def update_could_be_locked
+    ContentTag.update_could_be_locked([self]) unless skip_touch.present?
     true
   end
-  
+
+  def self.update_could_be_locked(tags=[])
+    content_ids = {}
+    tags.each do |t| 
+      (content_ids[t.content_type] ||= []) << t.content_id if t.content_type && t.content_id
+    end
+    content_ids.each do |type, ids|
+      klass = type.constantize
+      if klass.new.respond_to?(:could_be_locked=)
+        klass.update_all({ :could_be_locked => true }, { :id => ids })
+      end
+    end
+  end
+
   def confirm_valid_module_requirements
     self.context_module && self.context_module.confirm_valid_requirements
   end
@@ -151,7 +156,6 @@ class ContentTag < ActiveRecord::Base
   def update_asset_name!
     return if !self.sync_title_to_asset_title?
     correct_context = self.content && self.content.respond_to?(:context) && self.content.context == self.context
-    correct_context ||= self.context && self.content.is_a?(WikiPage) && self.content.wiki && self.content.wiki.wiki_namespaces.length == 1 && self.content.wiki.wiki_namespaces.map(&:context_code).include?(self.context_code)
     if correct_context
       if self.content.respond_to?("name=") && self.content.respond_to?("name") && self.content.name != self.title
         self.content.update_attribute(:name, self.title)
@@ -214,12 +218,10 @@ class ContentTag < ActiveRecord::Base
   def content_asset_string=(val)
     vals = val.split("_")
     id = vals.pop
-    if Context::AssetTypes.const_defined?(vals.join("_").classify)
-      type = Context::AssetTypes.const_get(vals.join("_").classify).to_s
-      if type && id && id.to_i > 0
-        self.content_type = type
-        self.content_id = id
-      end
+    type = Context::AssetTypes.get_for_string(vals.join("_").classify)
+    if type && id && id.to_i > 0
+      self.content_type = type.to_s
+      self.content_id = id
     end
   end
   
@@ -318,7 +320,16 @@ class ContentTag < ActiveRecord::Base
     options[:migrate] = true if options[:migrate] == nil
     if !self.cloned_item && !self.new_record?
       self.cloned_item ||= ClonedItem.create(:original_item => self)
-      self.save! 
+      begin
+        self.save! 
+      rescue ActiveRecord::RecordInvalid => e
+        if e.message =~ /Url is not a valid URL/
+          self.url = URI::escape(self.url)
+          self.save!
+        else
+          raise e
+        end
+      end
     end
     existing = ContentTag.active.find_by_context_type_and_context_id_and_id(context.class.to_s, context.id, self.id)
     existing ||= ContentTag.active.find_by_context_type_and_context_id_and_cloned_item_id(context.class.to_s, context.id, self.cloned_item_id)

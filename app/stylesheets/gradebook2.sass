@@ -12,7 +12,6 @@ $cell_height: 33px
     border: 0
     padding: 0
     overflow: visible
-    position: relative
     &.editable
       background: transparent
       border: none
@@ -37,6 +36,14 @@ $cell_height: 33px
   .student-name
     color: #1b7eda
     text-shadow: #fbf8f8 0 0 1px
+  .avatar
+    float: left
+    width: 34px
+    img
+      max-width: 30px
+      height: 30px
+  .student-placeholder
+    display: none
   .student-section
     font-size: 10px
     color: #aaa
@@ -46,11 +53,21 @@ $cell_height: 33px
     text-align: center
     line-height: 35px
 
+  // show and hide student names using a parent css class.
+  .hide-students
+    .student-name, .avatar
+      display: none
+    .student-placeholder
+      display: block
+    .secondary_identifier_cell
+      text-indent: -9999em
+
 // override the default jquery ui top border
 .slick-header.ui-state-default
   border-top: 0
 .slick-header-column
-  +vertical-gradient(#f3f4f8, #dbdcde)
+  background-color: #f3f4f8
+  background-image: none
   padding: 10px
   font-size: 12px
   text-align: center
@@ -75,7 +92,9 @@ $cell_height: 33px
     overflow: hidden
     text-overflow: ellipsis
     white-space: nowrap
-
+  .muted
+    background: url('/images/sound_mute.png') no-repeat center right
+    padding-right: 16px
   .assignment-points-possible
     font-weight: normal
     text-shadow: #84848a 0 0 1px
@@ -96,6 +115,10 @@ $cell_height: 33px
     right: 3px
     text-indent: 999px
     +opacity(0)
+
+    //override jqueryui blue border
+    border: 0 none
+
     &:hover, &.ui-menu-trigger-menu-is-open
       background-position: bottom left
       +opacity(1)
@@ -198,6 +221,25 @@ $cell_height: 33px
   &.resubmitted
     background-image: url("/images/gradebook-resubmitted-indicator.png")
 
+.gradebook-cell-turnitin
+  position: absolute
+  top: 2px
+  right: 2px
+  z-index: 1
+  width: 20px
+  height: 16px
+  &.no-score
+    background-image: url(/images/turnitin_no_score.png)
+  &.none-score
+    background-image: url(/images/turnitin_none_score.png)
+  &.acceptable-score
+    background-image: url(/images/turnitin_acceptable_score.png)
+  &.warning-score
+    background-image: url(/images/turnitin_warning_score.png)
+  &.problem-score
+    background-image: url(/images/turnitin_problem_score.png)
+  &.failure-score
+    background-image: url(/images/turnitin_failure_score.png)
 
 .gradebook-cell-comment
   position: absolute
@@ -207,7 +249,7 @@ $cell_height: 33px
   height: 12px
   width: 12px
   visibility: hidden
-  z-index: 1 //needs to be above "normal but below tooltips"
+  z-index: 2 //needs to be above "normal but below tooltips"
   overflow: hidden
 
   &:hover,
@@ -238,8 +280,6 @@ $cell_height: 33px
   border: 1px solid #35a5e5
   background-color: #fff
   box-shadow: 0 0 5px rgba(81, 203, 238, 1)
-  -webkit-box-shadow: 0 0 5px rgba(81, 203, 238, 1)
-  -moz-box-shadow: 0 0 5px rgba(81, 203, 238, 1)
 .gradebook-cell
   .grade
     border: none
@@ -250,6 +290,7 @@ $cell_height: 33px
     padding: 0
     margin: 0
     background: none
+    box-shadow: none !important
   .grade::-webkit-outer-spin-button
     display: none
 .gradebook-cell-out-of-formatter
@@ -320,14 +361,48 @@ $gradebook_checkbox_width: 16px
 
 // STUFF FOR HEADER
 #gradebook-toolbar
-  background: url('/images/gradebook-header-bg.png') repeat-x
   height: 28px
-  padding: 8px 20px
+  padding: 6px 10px
+  position: relative
+  border-left: none
+  border-right: none
+
+.gradebook_filter
+  position: absolute
+  right: 10px
+  top: 6px
+
+.gradebook_filter input
+  width: 300px
 
 #section-to-show-menu
   width: 200px
-  &.scrolling
-    overflow-x: hidden
-    overflow-y: auto
-    max-height: 550px
+  overflow-x: hidden
+  overflow-y: auto
+  max-height: 550px
 
+.submission_type_icon
+  display: block
+  width: 100%
+  height: 22px
+  background-position: center center
+  background-repeat: no-repeat
+  .online_text_entry &
+    background-image: url('/images/text_entry.png')
+  .discussion_topic &
+    background-image: url('/images/word_bubble.png')
+  .online_upload &
+    background-image: url('/images/file.png')
+  .pending_review &
+    background-image: url('/images/pending_review.png')
+  .media_comment &, .media_recording &
+    background-image: url('/images/media_comment.gif')
+  .quiz &
+    background-image: url('/images/quiz.png')
+
+.letter-grade-points
+  +opacity(0.4)
+  position: absolute
+  font-size: 11px
+  padding-left: 8px
+  line-height: 19px

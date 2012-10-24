@@ -64,12 +64,15 @@ describe SisImportsApiController, :type => :integration do
   end
 
   it 'should kick off a sis import via multipart attachment' do
+    json = nil
+    expect {
     json = api_call(:post,
           "/api/v1/accounts/#{@account.id}/sis_imports.json",
           { :controller => 'sis_imports_api', :action => 'create',
             :format => 'json', :account_id => @account.id.to_s }, 
           { :import_type => 'instructure_csv',
             :attachment => fixture_file_upload("files/sis/test_user_1.csv", 'text/csv') })
+    }.to change { Delayed::Job.strand_size("sis_batch:account:#{@account.id}") }.by(1)
 
     json.has_key?("created_at").should be_true
     json.delete("created_at")
@@ -86,7 +89,7 @@ describe SisImportsApiController, :type => :integration do
 
     SisBatch.count.should == @batch_count + 1
     batch.batch_mode.should be_false
-    batch.process_without_send_later
+    run_jobs
     User.count.should == @user_count + 1
     User.last.name.should == "Jamie Kennedy"
     
@@ -102,6 +105,7 @@ describe SisImportsApiController, :type => :integration do
     json.delete("ended_at")
     json.should == { 
           "data" => { "import_type" => "instructure_csv",
+                      "supplied_batches" => ["user"],
                       "counts" => { "abstract_courses" => 0,
                                     "courses" => 0,
                                     "sections" => 0,
@@ -118,17 +122,43 @@ describe SisImportsApiController, :type => :integration do
           "workflow_state"=>"imported" }
   end
 
-  it "should enable batch mode" do
+  it "should skip the job for skip_sis_jobs_account_ids" do
+    Setting.set('skip_sis_jobs_account_ids', "fake,#{@account.global_id}")
+    expect {
+      api_call(:post,
+            "/api/v1/accounts/#{@account.id}/sis_imports.json",
+            { :controller => 'sis_imports_api', :action => 'create',
+              :format => 'json', :account_id => @account.id.to_s }, 
+            { :import_type => 'instructure_csv',
+              :attachment => fixture_file_upload("files/sis/test_user_1.csv", 'text/csv') })
+    }.to change { Delayed::Job.strand_size("sis_batch:account:#{@account.id}") }.by(0)
+  end
+
+  it "should enable batch mode and require selecting a valid term" do
     json = api_call(:post,
           "/api/v1/accounts/#{@account.id}/sis_imports.json",
           { :controller => 'sis_imports_api', :action => 'create',
             :format => 'json', :account_id => @account.id.to_s }, 
           { :import_type => 'instructure_csv',
             :attachment => fixture_file_upload("files/sis/test_user_1.csv", 'text/csv'),
-            :batch_mode => '1' })
+            :batch_mode => '1',
+            :batch_mode_term_id => @account.default_enrollment_term.id })
     batch = SisBatch.find(json["id"])
     batch.batch_mode.should be_true
-    batch.batch_mode_term.should be_nil
+    batch.batch_mode_term.should == @account.default_enrollment_term
+  end
+
+  it "should error if batch mode and the term can't be found" do
+    expect {
+      json = api_call(:post,
+          "/api/v1/accounts/#{@account.id}/sis_imports.json",
+          { :controller => 'sis_imports_api', :action => 'create',
+            :format => 'json', :account_id => @account.id.to_s }, 
+          { :import_type => 'instructure_csv',
+            :attachment => fixture_file_upload("files/sis/test_user_1.csv", 'text/csv'),
+            :batch_mode => '1' }, {}, :expected_status => 400)
+      json['message'].should == "Batch mode specified, but the given batch_mode_term_id cannot be found."
+    }.to change(SisBatch, :count).by(0)
   end
 
   it "should enable sis stickiness options" do
@@ -368,21 +398,6 @@ describe SisImportsApiController, :type => :integration do
       c.name.should == "French"
       c.short_name.should == "Fren101"
     end
-  end
-
-  it "should allow selecting a term for batch mode" do
-    term = @account.enrollment_terms.first
-    term.update_attribute('sis_source_id', 'my-term')
-    json = api_call(:post,
-          "/api/v1/accounts/#{@account.id}/sis_imports.json",
-          { :controller => 'sis_imports_api', :action => 'create',
-            :format => 'json', :account_id => @account.id.to_s }, 
-          { :import_type => 'instructure_csv',
-            :attachment => fixture_file_upload("files/sis/test_user_1.csv", 'text/csv'),
-            :batch_mode => '1', :batch_mode_term_id => 'sis_term_id:my-term' })
-    batch = SisBatch.last
-    batch.batch_mode.should be_true
-    batch.batch_mode_term.should == term
   end
 
   it "should allow raw post without charset" do

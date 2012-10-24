@@ -16,9 +16,24 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-var wikiSidebar;
-I18n.scoped('calendar_events', function(I18n) {
-jQuery(function($) {
+define([
+  'i18n!calendar_events',
+  'jquery' /* jQuery, $ */,
+  'wikiSidebar',
+  'jquery.instructure_date_and_time' /* parseFromISO, date_field, time_field, /\$\.datetime/ */,
+  'jquery.instructure_forms' /* formSubmit, fillFormData, formErrors */,
+  'jquery.instructure_misc_helpers' /* encodeToHex, scrollSidebar */,
+  'jquery.instructure_misc_plugins' /* confirmDelete, fragmentChange, showIf */,
+  'jquery.loadingImg' /* loadingImg, loadingImage */,
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'compiled/tinymce',
+  'tinymce.editor_box' /* editorBox */,
+  'vendor/date' /* Date.parse */
+], function(I18n, $, wikiSidebar) {
+
+  var noContentText = I18n.t('no_content', "No Content");
+
+$(function($) {
   var $full_calendar_event        = $("#full_calendar_event"),
       $edit_calendar_event_form   = $("#edit_calendar_event_form"),
       $full_calendar_event_holder = $("#full_calendar_event_holder");
@@ -41,11 +56,10 @@ jQuery(function($) {
     var data = $full_calendar_event.getTemplateData({
       textValues: ['start_at_date_string', 'start_at_time_string', 'end_at_time_string', 'title', 'all_day', 'all_day_date']
     });
-    if (data.description == I18n.t('no_content', "No Content")) {
+    if (data.description == noContentText) {
       data.description = "";
     }
     data.start_date = data.start_at_date_string;
-    data.start_date = $("#full_calendar_event .start_at_date_string").attr('title');
     data.start_time = data.start_at_time_string;
     data.end_time = data.end_at_time_string;
     if (data.all_day == 'true') {
@@ -114,7 +128,7 @@ jQuery(function($) {
       var calendar_event = data.calendar_event,
           start_at       = $.parseFromISO(calendar_event.start_at),
           end_at         = $.parseFromISO(calendar_event.end_at),
-          parsedDate     = Date.parse(calendar_event.all_day_date);
+          parsedDate     = Date.parse(calendar_event.all_day_date).toString("MMM dd, yyyy");
 
       
       calendar_event.start_at_date_string = start_at.date_formatted;
@@ -131,7 +145,6 @@ jQuery(function($) {
           data: calendar_event,
           htmlValues: ['description']
         });
-      $full_calendar_event_holder.find(".start_at_date_string").attr('title', calendar_event.start_at_date_string);
       $(this).find("textarea").editorBox('set_code', calendar_event.description);
       var month = null, year = null;
       if (calendar_event.start_at) {

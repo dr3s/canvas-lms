@@ -19,87 +19,130 @@
 # @API Assignments
 #
 # API for accessing assignment information.
+#
+# @object Assignment
+#     {
+#       // the ID of the assignment
+#       id: 4,
+#
+#       // the name of the assignment
+#       name: "some assignment",
+#
+#       // the assignment description, in an HTML fragment
+#       description: '<p>Do the following:</p>...',
+#
+#       // the due date
+#       due_at: '2012-07-01T23:59:00-06:00',
+#
+#       // the ID of the course the assignment belongs to
+#       course_id: 123,
+#
+#       // the URL to the assignment's web page
+#       html_url: 'http://canvas.example.com/courses/123/assignments/4'
+#
+#       // the ID of the assignment's group
+#       assignment_group_id: 2,
+#
+#       // the ID of the assignment’s group set (if this is a group assignment)
+#       group_category_id: 1
+#
+#       // if the requesting user has grading rights, the number of submissions that need grading.
+#       needs_grading_count: 17,
+#
+#       // the sorting order of the assignment in the group
+#       position: 1,
+#
+#       // the URL to the Canvas web UI page for the assignment
+#       html_url: "https://...",
+#
+#       // whether the assignment is muted
+#       muted: false,
+#
+#       // (Optional) explanation of lock status
+#       lock_explanation: "This assignment is locked until September 1 at 12:00am",
+#
+#       // (Optional) whether anonymous submissions are accepted (applies only to quiz assignments)
+#       anonymous_submissions: false,
+#
+#       // (Optional) list of file extensions allowed for submissions
+#       allowed_extensions: ["doc","xls"],
+#
+#       // (Optional) the DiscussionTopic associated with the assignment, if applicable
+#       discussion_topic: { ... },
+#
+#       // the maximum points possible for the assignment
+#       points_possible: 12,
+#
+#       // the types of submissions allowed for this assignment
+#       // list containing one or more of the following:
+#       // "online_text_entry", "online_url", "online_upload", "media_recording"
+#       submission_types: ["online_text_entry"]
+#
+#       // (Optional) the type of grading the assignment receives;
+#       // one of 'pass_fail', 'percent', 'letter_grade', 'points'
+#       grading_type: "points",
+#
+#       // if true, the rubric is directly tied to grading the assignment.
+#       // Otherwise, it is only advisory.
+#       use_rubric_for_grading: true,
+#
+#       // an object describing the basic attributes of the rubric, including the point total
+#       rubric_settings: {
+#         points_possible: 12
+#       },
+#
+#       // a list of scoring criteria and ratings for each 
+#       rubric: [
+#         {
+#           "points": 10,
+#           "id": "crit1",
+#           "description": "Criterion 1",
+#           "ratings": [
+#             {
+#               "points": 10,
+#               "id": "rat1",
+#               "description": "Full marks"
+#             },
+#             {
+#               "points": 7,
+#               "id": "rat2",
+#               "description": "Partial answer"
+#             },
+#             {
+#               "points": 0,
+#               "id": "rat3",
+#               "description": "No marks"
+#             }
+#           ]
+#         },
+#         {
+#           "points": 2,
+#           "id": "crit2",
+#           "description": "Criterion 2",
+#           "ratings": [
+#             {
+#               "points": 2,
+#               "id": "rat1",
+#               "description": "Pass"
+#             },
+#             {
+#               "points": 0,
+#               "id": "rat2",
+#               "description": "Fail"
+#             }
+#           ]
+#         }
+#       ]
+#     }
+#
 class AssignmentsApiController < ApplicationController
   before_filter :require_context
 
   include Api::V1::Assignment
 
-  # @API
+  # @API List assignments
   # Returns the list of assignments for the current context.
-  #
-  # @response_field id The unique identifier for the assignment.
-  # @response_field name The name of the assignment.
-  # @response_field needs_grading_count [Integer] If the requesting user has grading rights, the number of submissions that need grading.
-  # @response_field position [Integer] The sorting order of this assignment in
-  #   the group.
-  # @response_field points_possible The maximum possible points for the
-  #   assignment.
-  # @response_field grading_type [Optional, "pass_fail"|"percent"|"letter_grade"|"points"]
-  #   The type of grade the assignment receives.
-  # @response_field use_rubric_for_grading [Boolean] If true, the rubric is
-  #   directly tied to grading the assignment. Otherwise, it is only advisory.
-  # @response_field rubric [Rubric]
-  #   A list of rows and ratings for each row. TODO: need more discussion of the
-  #   rubric data format and usage for grading.
-  #
-  # @example_response
-  #   [
-  #     {
-  #       "id": 4,
-  #       "name": "some assignment",
-  #       "points_possible": 12,
-  #       "grading_type": "points",
-  #       "due_at": "2011-05-26T23:59:00-06:00",
-  #       "submission_types" : [
-  #         "online_upload",
-  #         "online_text_entry",
-  #         "online_url",
-  #         "media_recording"
-  #        ]
-  #       "use_rubric_for_grading": true,
-  #       "rubric": [
-  #         {
-  #           "ratings": [
-  #             {
-  #               "points": 10,
-  #               "id": "rat1",
-  #               "description": "A"
-  #             },
-  #             {
-  #               "points": 7,
-  #               "id": "rat2",
-  #               "description": "B"
-  #             },
-  #             {
-  #               "points": 0,
-  #               "id": "rat3",
-  #               "description": "F"
-  #             }
-  #           ],
-  #           "points": 10,
-  #           "id": "crit1",
-  #           "description": "Crit1"
-  #         },
-  #         {
-  #           "ratings": [
-  #             {
-  #               "points": 2,
-  #               "id": "rat1",
-  #               "description": "Pass"
-  #             },
-  #             {
-  #               "points": 0,
-  #               "id": "rat2",
-  #               "description": "Fail"
-  #             }
-  #           ],
-  #           "points": 2,
-  #           "id": "crit2",
-  #           "description": "Crit2"
-  #         }
-  #       ]
-  #     }
-  #   ]
+  # @returns [Assignment]
   def index
     if authorized_action(@context, @current_user, :read)
       @assignments = @context.active_assignments.find(:all,
@@ -107,24 +150,26 @@ class AssignmentsApiController < ApplicationController
           :order => 'assignment_groups.position, assignments.position')
 
       hashes = @assignments.map { |assignment|
-        assignment_json(assignment, @current_user, session, [], @context.user_is_teacher?(@current_user)) }
+        assignment_json(assignment, @current_user, session) }
 
       render :json => hashes.to_json
     end
   end
 
+  # @API Get a single assignment 
+  # Returns the assignment with the given id.
+  # @returns Assignment
   def show
     if authorized_action(@context, @current_user, :read)
       @assignment = @context.active_assignments.find(params[:id],
           :include => [:assignment_group, :rubric_association, :rubric])
 
-      render :json => assignment_json(@assignment, @current_user, session, [], @context.user_is_teacher?(@current_user)).to_json
+      @assignment.context_module_action(@current_user, :read) unless @assignment.locked_for?(@current_user, :check_policies => true)
+      render :json => assignment_json(@assignment, @current_user, session)
     end
   end
 
-  ALLOWED_FIELDS = %w(name position points_possible grading_type due_at)
-
-  # @API
+  # @API Create an assignment
   # Create a new assignment for this course. The assignment is created in the
   # active state.
   #
@@ -136,24 +181,14 @@ class AssignmentsApiController < ApplicationController
   # @argument assignment[grading_type] [Optional, "pass_fail"|"percent"|"letter_grade"|"points"] The strategy used for grading the assignment. The assignment is ungraded if this field is omitted.
   # @argument assignment[due_at] [Timestamp] The day/time the assignment is due. Accepts
   #   times in ISO 8601 format, e.g. 2011-10-21T18:48Z.
+  # @argument assignment[description] [String] The assignment's description, supports HTML.
+  # @returns Assignment
   def create
-    assignment_params = {}
-    if params[:assignment].is_a?(Hash)
-      assignment_params = params[:assignment].slice(*ALLOWED_FIELDS)
-      assignment_params["time_zone_edited"] = Time.zone.name if assignment_params["due_at"]
-    end
-    # TODO: allow rubric creation
-
-    @assignment = @context.active_assignments.build(assignment_params)
-    @assignment.infer_due_at
+    @assignment = create_api_assignment(@context, params[:assignment])
 
     if authorized_action(@assignment, @current_user, :create)
-      if custom_vals = params[:assignment][:set_custom_field_values]
-        @assignment.set_custom_field_values = custom_vals
-      end
-
       if @assignment.save
-        render :json => assignment_json(@assignment, @current_user, session, [], @context.user_is_teacher?(@current_user)).to_json, :status => 201
+        render :json => assignment_json(@assignment, @current_user, session).to_json, :status => 201
       else
         # TODO: we don't really have a strategy in the API yet for returning
         # errors.
@@ -162,28 +197,26 @@ class AssignmentsApiController < ApplicationController
     end
   end
 
-  # @API
+  # @API Edit an assignment
   # Modify an existing assignment. See the documentation for assignment
   # creation.
+  # @returns Assignment
   def update
-    assignment_params = {}
-    if params[:assignment].is_a?(Hash)
-      assignment_params = params[:assignment].slice(*ALLOWED_FIELDS)
-    end
-
     @assignment = @context.assignments.find(params[:id])
 
     if authorized_action(@assignment, @current_user, :update_content)
-      if custom_vals = params[:assignment][:set_custom_field_values]
-        @assignment.set_custom_field_values = custom_vals
-      end
-
-      if @assignment.update_attributes(assignment_params)
-        render :json => assignment_json(@assignment, @current_user, session, [], @context.user_is_teacher?(@current_user)).to_json, :status => 201
+      if @assignment.frozen?
+        render :json => {:message => t('errors.no_edit_frozen', "You cannot edit a frozen assignment.")}.to_json, :status => 400
       else
-        # TODO: we don't really have a strategy in the API yet for returning
-        # errors.
-        render :json => 'error'.to_json, :status => 400
+        update_api_assignment(@assignment, params[:assignment])
+
+        if @assignment.save
+          render :json => assignment_json(@assignment, @current_user, session).to_json, :status => 201
+        else
+          # TODO: we don't really have a strategy in the API yet for returning
+          # errors.
+          render :json => 'error'.to_json, :status => 400
+        end
       end
     end
   end

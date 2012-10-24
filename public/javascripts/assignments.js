@@ -16,7 +16,28 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-I18n.scoped('assignments', function(I18n) {
+define([
+  'INST' /* INST */,
+  'i18n!assignments',
+  'jquery' /* $ */,
+  'str/htmlEscape',
+  'jqueryui/draggable' /* /\.draggable/ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_date_and_time' /* parseFromISO, dateString, datepicker, time_field, datetime_field, /\$\.datetime/ */,
+  'jquery.instructure_forms' /* formSubmit, fillFormData, getFormData, formSuggestion */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* confirmDelete, showIf */,
+  'jquery.keycodes' /* keycodes */,
+  'jquery.loadingImg' /* loadingImg, loadingImage */,
+  'jquery.scrollToVisible' /* scrollToVisible */,
+  'jquery.templateData' /* fillTemplateData, getTemplateData */,
+  'vendor/date' /* Date.parse, Date.UTC */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'jqueryui/datepicker' /* /\.datepicker/ */,
+  'jqueryui/droppable' /* /\.droppable/ */,
+  'jqueryui/sortable' /* /\.sortable/ */
+], function(INST, I18n, $, htmlEscape) {
+
   var defaultShowDateOptions = false;
   function hideAssignmentForm() {
     var $form = $("#add_assignment_form");
@@ -95,11 +116,11 @@ I18n.scoped('assignments', function(I18n) {
         .attr('method', 'PUT');
     }
     if(data.due_time && data.due_date) {
-      
+
     }
     $form.fillFormData(data, { object_name: "assignment" });
     $form.find(":text:first").focus().select();
-    $("html,body").scrollToVisible($assignment);
+    //$("html,body").scrollToVisible($assignment);
   }
   function hideGroupForm() {
     var $form = $("#add_group_form");
@@ -235,8 +256,8 @@ I18n.scoped('assignments', function(I18n) {
     if($assignment.attr('id') == 'assignment_creating') {
       isNew = true;
     }
-    $assignment.fillTemplateData({ 
-      id: "assignment_" + assignment.id, 
+    $assignment.fillTemplateData({
+      id: "assignment_" + assignment.id,
       data: assignment,
       hrefValues: ['id']
     });
@@ -244,7 +265,7 @@ I18n.scoped('assignments', function(I18n) {
     $assignment.find(".links,.move").css('display', '');
     $assignment.toggleClass('group_assignment_editable', assignment.permissions && assignment.permissions.update);
     addAssignmentToGroup($("#group_" + assignment.assignment_group_id), $assignment);
-    $("html,body").scrollToVisible($assignment);
+    //$("html,body").scrollToVisible($assignment);
   }
   function addAssignmentToGroup($group, $assignment) {
     var data = $assignment.getTemplateData({textValues: ['timestamp', 'title', 'position']}),
@@ -279,9 +300,7 @@ I18n.scoped('assignments', function(I18n) {
           groups = [];
       $("#groups .assignment_group").each(function() {
         var data = $(this).getTemplateData({ textValues: ['assignment_group_id'] });
-        if($(this)[0] != $drag[0]) {
-          groups.push(data.assignment_group_id);
-        }
+        groups.push(data.assignment_group_id);
       });
       var data = {};
       data.order = groups.join(',');
@@ -292,7 +311,7 @@ I18n.scoped('assignments', function(I18n) {
     }
   };
   var assignment_sortable_options = {
-    items: '.group_assignment',
+    items: '.group_assignment:not(.frozen)',
     connectWith: '.assignment_group .assignment_list',
     handle: '.move_icon, .move',
     axis: 'y',
@@ -385,10 +404,6 @@ I18n.scoped('assignments', function(I18n) {
       if (data.points_possible) { params['points_possible'] = data.points_possible; }
       if(data.assignment_group_id) { params['assignment_group_id'] = data.assignment_group_id; }
       if(data.submission_types) { params['submission_types'] = data.submission_types; }
-      params['model_key'] = Math.round(Math.random() * 999999);
-      if(INST && INST.gettingStartedPage) {
-        params['getting_started'] = '1';
-      }
       params['return_to'] = location.href;
       pieces[0] += "?" + $.param(params);
       location.href = pieces.join("#");
@@ -489,9 +504,9 @@ I18n.scoped('assignments', function(I18n) {
       }
     });
     $("#class_weighting_policy").change(function(event, justInit) {
-      if(justInit) { 
+      if(justInit) {
         $(this).triggerHandler('checked');
-        return; 
+        return;
       }
       var data = {};
       var doWeighting = $(this).attr('checked');
@@ -538,12 +553,12 @@ I18n.scoped('assignments', function(I18n) {
           var rule_type = parts[0];
           var value = parts[1];
           if(rule_type == "drop_lowest") {
-            rules += $.htmlEscape(I18n.t('drop_lowest_scores', "Drop the Lowest %{number} Scores", {number: value})) + "<br/>";
+            rules += htmlEscape(I18n.t('drop_lowest_scores', "Drop the Lowest %{number} Scores", {number: value})) + "<br/>";
           } else if(rule_type == "drop_highest") {
-            rules += $.htmlEscape(I18n.t('drop_highest_scores', "Drop the Highest %{number} Scores", {number: value})) + "<br/>";
+            rules += htmlEscape(I18n.t('drop_highest_scores', "Drop the Highest %{number} Scores", {number: value})) + "<br/>";
           } else if(rule_type == "never_drop") {
             var title = $("#assignment_" + value).find(".title").text();
-            rules += $.htmlEscape(I18n.t('never_drop_scores', "Never Drop %{assignment_name}", {assignment_name: title})) + "<br/>";
+            rules += htmlEscape(I18n.t('never_drop_scores', "Never Drop %{assignment_name}", {assignment_name: title})) + "<br/>";
           }
         }
       });
@@ -565,7 +580,7 @@ I18n.scoped('assignments', function(I18n) {
       }
       $(".group_assignment.assignment-hover").removeClass('assignment-hover');
       $(this).addClass('assignment-hover');
-      if($("#groups .assignment_group").length > 0 && $(this).find(".edit_assignment_link").css('display') != 'none') {      
+      if($("#groups .assignment_group").length > 0 && $(this).find(".edit_assignment_link").css('display') != 'none') {
         $(this).find(".submitted_icon").hide();
         $(this).find(".move_icon").show();
       } else {
@@ -586,7 +601,7 @@ I18n.scoped('assignments', function(I18n) {
       $group.find(".padding").show();
       var doWeighting = $("#class_weighting_policy").attr('checked');
       $group.find(".assignment_list").sortable(assignment_sortable_options);
-      $(".assignment_group .assignment_list").sortable('option', 'connectWith', '.assignment_group .assignment_list');
+      $("#groups.groups_editable .assignment_group .assignment_list").sortable('option', 'connectWith', '.assignment_group .assignment_list');
       editGroup($group);
     });
     $(".edit_group_link").click(function(event) {
@@ -647,10 +662,9 @@ I18n.scoped('assignments', function(I18n) {
         });
         $dialog.find(".group_select")[0].selectedIndex = 0;
         $dialog.find("#assignment_group_delete").attr('checked', true);
-        $dialog.dialog('close').dialog({
-          autoOpen: false,
+        $dialog.dialog({
           width: 500
-        }).dialog('open').data('group_id', data.assignment_group_id);
+        }).data('group_id', data.assignment_group_id);
         return;
       }
       $group.confirmDelete({
@@ -707,7 +721,7 @@ I18n.scoped('assignments', function(I18n) {
         data.rules = ruleList;
         data['assignment_group[rules]'] = data.rules;
         return data;
-      }, 
+      },
       beforeSubmit: function(data) {
         var $group = $(this).parents(".assignment_group");
         var $group_header = $group.find(".header");
@@ -718,7 +732,7 @@ I18n.scoped('assignments', function(I18n) {
         }
         hideGroupForm();
         return $group;
-      }, 
+      },
       success: function(data, $group) {
         var $group_header = $group.find(".header");
         $group_header.loadingImage('remove');
@@ -793,7 +807,7 @@ I18n.scoped('assignments', function(I18n) {
       },
       beforeSubmit: function(data) {
         var $assignment = $(this).parents(".group_assignment");
-        $assignment.fillTemplateData({ data: data });	
+        $assignment.fillTemplateData({ data: data });
         var date = null;
         if(data['assignment[due_at]']) {
           date = Date.parse(data['assignment[due_at]']);
@@ -816,15 +830,15 @@ I18n.scoped('assignments', function(I18n) {
           $assignment.find(".date_text").hide();
         }
         $assignment.fillTemplateData({data: {
-          timestamp: updatedTimestamp, 
+          timestamp: updatedTimestamp,
           title: data.title
         } });
         $assignment.find(".points_text").showIf(data.points_possible);
         addAssignmentToGroup($assignment.parents(".assignment_group"), $assignment);
         $assignment.find(".links").hide();
         $assignment.loadingImage({image_size: 'small', paddingTop: 5});
-        $("html,body").scrollToVisible($assignment);
-        
+        //$("html,body").scrollToVisible($assignment);
+
         var isNew = false;
         if($assignment.attr('id') == "assignment_new") {
           isNew = true;
@@ -893,7 +907,7 @@ I18n.scoped('assignments', function(I18n) {
     });
     $("#edit_assignment_form").bind('assignment_updated', function(event, data) {
       var $assignment = $("#assignment_" + data.assignment.id); //$("#edit_assignment_form").data('current_assignment');
-      updateAssignment($assignment, data);    
+      updateAssignment($assignment, data);
     });
     $(".preview_assignment_link").click(function(event) {
       event.preventDefault();
@@ -913,9 +927,8 @@ I18n.scoped('assignments', function(I18n) {
         object_name: "assignment"
       }).attr('action', $assignment.find(".assignment_url").attr('href'));
       var height = Math.max(Math.round($(window).height() * 0.8), 400);
-      $("#full_assignment_holder").dialog('close').dialog({
+      $("#full_assignment_holder").dialog({
         title: I18n.t('titles.assignment_details', "Assignment Details"),
-        autoOpen: false,
         width: 630,
         height: height,
         modal: true,
@@ -926,12 +939,12 @@ I18n.scoped('assignments', function(I18n) {
           backgroundColor: "#000",
           opacity: 0.7
         }
-      }).dialog('open');
+      });
       $("#full_assignment").show();
     });
     $(document).keycodes('j k', function(event) {
       event.preventDefault();
-      if(event.keyString == 'j') { 
+      if(event.keyString == 'j') {
         moveSelection('down');
       } else if(event.keyString == 'k') {
         moveSelection('up');

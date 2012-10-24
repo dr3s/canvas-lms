@@ -59,8 +59,10 @@ module CC
     def process_outcome_group_content(node, group)
       group.sorted_content.each do |item|
         if item.is_a? LearningOutcome
+          next unless export_object?(item)
           process_learning_outcome(node, item)
         else
+          next unless export_object?(item) || item.sorted_content.any?{|i| export_object?(i)}
           process_outcome_group(node, item)
         end
       end
@@ -71,8 +73,7 @@ module CC
       node.learningOutcome(:identifier=>migration_id) do |out_node|
         out_node.title item.short_description unless item.short_description.blank?
         out_node.description @html_exporter.html_content(item.description) unless item.description.blank?
-        criterion = item.data[:rubric_criterion]
-        if criterion
+        if item.data && criterion = item.data[:rubric_criterion]
           out_node.points_possible criterion[:points_possible] if criterion[:points_possible]
           out_node.mastery_points criterion[:mastery_points] if criterion[:mastery_points]
           if criterion[:ratings] && criterion[:ratings].length > 0

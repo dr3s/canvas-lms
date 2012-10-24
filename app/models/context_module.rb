@@ -56,8 +56,6 @@ class ContextModule < ActiveRecord::Base
       end
     end
     self.prerequisites = prereqs
-    @re_evaluate_students = self.changed? || self.prerequisites_changed? || self.completion_requirements_changed?
-    @update_downstrea_modules = self.prerequisites_changed? || self.completion_requirements_changed?
     self.position
   end
   
@@ -98,15 +96,14 @@ class ContextModule < ActiveRecord::Base
   
   def check_students
     return if @dont_check_students || self.deleted?
-    # modules are ordered by position, so running through them in order will automatically
-    # issues with dependencies loading in the correct order
-    if @re_evaluate_students || true
-      send_later_if_production :update_student_progressions
-    end
+    send_later_if_production :update_student_progressions
     true
   end
   
   def update_student_progressions(user=nil)
+    # modules are ordered by position, so running through them in order will
+    # automatically handle issues with dependencies loading in the correct
+    # order
     modules = ContextModule.find(:all, :conditions => {:context_type => self.context_type, :context_id => self.context_id}, :order => :position)
     students = user ? [user] : self.context.students
     modules.each do |mod|
@@ -130,7 +127,7 @@ class ContextModule < ActiveRecord::Base
   end
   
   def available_for?(user, tag=nil, deep_check=false)
-    return true if !self.to_be_unlocked && (!self.prerequisites || self.prerequisites.empty?) && !self.require_sequential_progress
+    return true if !self.to_be_unlocked && self.prerequisites.blank? && !self.require_sequential_progress
     return true if self.grants_right?(user, nil, :update)
     progression = self.evaluate_for(user)
     # if the progression is locked, then position in the progression doesn't
@@ -230,13 +227,9 @@ class ContextModule < ActiveRecord::Base
   end
 
   def add_item(params, added_item=nil, opts={})
-    association_id = nil
     position = opts[:position] || (self.content_tags.active.map(&:position).compact.max || 0) + 1
     if params[:type] == "wiki_page"
-      item = opts[:wiki_page] || WikiPage.find_by_id(params[:id])
-      item_namespace = item.wiki.wiki_namespaces.find_by_context_id_and_context_type(self.context_id, self.context_type)
-      item = nil unless item && item_namespace
-      association_id = item_namespace.id rescue nil
+      item = opts[:wiki_page] || self.context.wiki.wiki_pages.find_by_id(params[:id])
     elsif params[:type] == "attachment"
       item = opts[:attachment] || self.context.attachments.active.find_by_id(params[:id])
     elsif params[:type] == "assignment"
@@ -266,7 +259,7 @@ class ContextModule < ActiveRecord::Base
     elsif params[:type] == 'context_external_tool'
       title = params[:title]
       added_item ||= self.content_tags.build(:context => self.context)
-      tool = ContextExternalTool.find_external_tool(params[:url], self.context)
+      tool = ContextExternalTool.find_external_tool(params[:url], self.context, params[:id].to_i)
       unless tool
         tool = ContextExternalTool.new
         tool.id = 0
@@ -303,7 +296,6 @@ class ContextModule < ActiveRecord::Base
       added_item
     else
       return nil unless item
-      added_item ||= ContentTag.find_by_content_id_and_content_type_and_context_id_and_context_type_and_tag_type(item.id, item.class.to_s, self.context_id, self.context_type, 'context_module')
       title = params[:title] || (item.title rescue item.name)
       added_item ||= self.content_tags.build(:context => context)
       added_item.attributes = {
@@ -314,7 +306,6 @@ class ContextModule < ActiveRecord::Base
         :position => position
       }
       added_item.context_module_id = self.id
-      added_item.context_module_association_id = association_id
       added_item.indent = params[:indent] || 0
       added_item.workflow_state = 'active'
       added_item.save
@@ -489,16 +480,13 @@ class ContextModule < ActiveRecord::Base
     end
     @cached_tags ||= self.content_tags.active
     tags = @cached_tags
-    if !recursive_check && !progression.new_record? && progression.updated_at > self.updated_at + 1 && ENV['RAILS_ENV'] != 'test' && !User.module_progression_jobs_queued?(user.id)
-    else
-      if (self.completion_requirements || []).empty? && (self.prerequisites || []).empty?
+    if recursive_check || progression.new_record? || progression.updated_at < self.updated_at || ENV['RAILS_ENV'] == 'test' || User.module_progression_jobs_queued?(user.id)
+      if self.completion_requirements.blank? && self.prerequisites.blank?
         progression.workflow_state = 'completed'
         progression.save
       end
       progression.workflow_state = 'locked'
-      if self.to_be_unlocked
-        progression.workflow_state = 'locked'
-      else
+      if !self.to_be_unlocked
         progression.requirements_met ||= []
         if progression.locked?
           progression.workflow_state = 'unlocked' if self.prerequisites_satisfied?(user, recursive_check)
@@ -519,6 +507,13 @@ class ContextModule < ActiveRecord::Base
                 if tag.content_type == "Quiz"
                   submission = QuizSubmission.find_by_quiz_id_and_user_id(tag.content_id, user.id)
                   score = submission.try(:kept_score)
+                elsif tag.content_type == "DiscussionTopic"
+                  if tag.content
+                    submission = Submission.find_by_assignment_id_and_user_id(tag.content.assignment_id, user.id)
+                    score = submission.try(:score)
+                  else
+                    score = nil
+                  end
                 else
                   submission = Submission.find_by_assignment_id_and_user_id(tag.content_id, user.id)
                   score = submission.try(:score)
@@ -566,16 +561,8 @@ class ContextModule < ActiveRecord::Base
     progression
   end
 
-  def self.visible_module_item_count
-    75
-  end
-  
   def to_be_unlocked
     self.unlock_at && self.unlock_at > Time.now
-  end
-  
-  def has_prerequisites?
-    self.prerequisites && !self.prerequisites.empty?
   end
   
   attr_accessor :clone_updated
@@ -639,9 +626,8 @@ class ContextModule < ActiveRecord::Base
 
   def self.process_migration(data, migration)
     modules = data['modules'] ? data['modules'] : []
-    to_import = migration.to_import 'modules'
     modules.each do |mod|
-      if mod['migration_id'] && (!to_import || to_import[mod['migration_id']])
+      if migration.import_object?("modules", mod['migration_id'])
         begin
           import_from_migration(mod, migration.context)
         rescue
@@ -668,6 +654,7 @@ class ContextModule < ActiveRecord::Base
     context.imported_migration_items << item if context.imported_migration_items && item.new_record?
     item.name = hash[:title] || hash[:description]
     item.migration_id = hash[:migration_id]
+    item.workflow_state = 'active' if item.deleted?
     item.position = hash[:position] || hash[:order]
     item.context = context
     item.unlock_at = Canvas::Migration::MigratorHelper.get_utc_time_from_timestamp(hash[:unlock_at]) if hash[:unlock_at]
@@ -686,12 +673,19 @@ class ContextModule < ActiveRecord::Base
       item.prerequisites = preqs if preqs.length > 0
     end
     
+    # Clear the old tags to be replaced by new ones
+    item.content_tags.destroy_all
     item.save!
     
     item_map = {}
     @item_migration_position = item.content_tags.active.map(&:position).compact.max || 0
     (hash[:items] || []).each do |tag_hash|
-      item.add_item_from_migration(tag_hash, 0, context, item_map)
+      begin
+        item.add_item_from_migration(tag_hash, 0, context, item_map)
+      rescue
+        message =t('broken_item', %{Couldn't import the module item "%{item_title}" in the module "%{module_title}"}, :item_title =>tag_hash[:title], :module_title => hash[:title] )
+        context.add_migration_warning(message, $!)
+      end
     end
     
     if hash[:completion_requirements]
@@ -719,7 +713,7 @@ class ContextModule < ActiveRecord::Base
   
   def add_item_from_migration(hash, level, context, item_map)
     hash = hash.with_indifferent_access
-    hash[:migration_id] ||= hash[:linked_resource_id] 
+    hash[:migration_id] ||= hash[:item_migration_id]
     hash[:migration_id] ||= Digest::MD5.hexdigest(hash[:title]) if hash[:title]
     item = nil
     existing_item = content_tags.find_by_id(hash[:id]) if hash[:id].present?
@@ -729,7 +723,7 @@ class ContextModule < ActiveRecord::Base
     existing_item.migration_id = hash[:migration_id]
     hash[:indent] = [hash[:indent] || 0, level].max
     if hash[:linked_resource_type] =~ /wiki_type|wikipage/i
-      wiki = self.context.wiki.wiki_pages.find_by_migration_id(hash[:migration_id]) if hash[:migration_id]
+      wiki = self.context.wiki.wiki_pages.find_by_migration_id(hash[:linked_resource_id]) if hash[:linked_resource_id]
       if wiki
         item = self.add_item({
           :title => hash[:title] || hash[:linked_resource_title],
@@ -740,7 +734,7 @@ class ContextModule < ActiveRecord::Base
       end
     elsif hash[:linked_resource_type] =~ /page_type|file_type|attachment/i
       # this is a file of some kind
-      file = self.context.attachments.find_by_migration_id(hash[:migration_id]) if hash[:migration_id]
+      file = self.context.attachments.active.find_by_migration_id(hash[:linked_resource_id]) if hash[:linked_resource_id]
       if file
         title = hash[:title] || hash[:linked_resource_title]
         item = self.add_item({
@@ -752,7 +746,7 @@ class ContextModule < ActiveRecord::Base
       end
     elsif hash[:linked_resource_type] =~ /assignment|project/i
       # this is a file of some kind
-      ass = self.context.assignments.find_by_migration_id(hash[:migration_id]) if hash[:migration_id]
+      ass = self.context.assignments.find_by_migration_id(hash[:linked_resource_id]) if hash[:linked_resource_id]
       if ass
         item = self.add_item({
           :title => hash[:title] || hash[:linked_resource_title],
@@ -789,7 +783,7 @@ class ContextModule < ActiveRecord::Base
         }, existing_item, :position => migration_position)
       end
     elsif hash[:linked_resource_type] =~ /assessment|quiz/i
-      quiz = self.context.quizzes.find_by_migration_id(hash[:migration_id]) if hash[:migration_id]
+      quiz = self.context.quizzes.find_by_migration_id(hash[:linked_resource_id]) if hash[:linked_resource_id]
       if quiz
         item = self.add_item({
           :title => hash[:title] || hash[:linked_resource_title],
@@ -799,7 +793,7 @@ class ContextModule < ActiveRecord::Base
         }, existing_item, :quiz => quiz, :position => migration_position)
       end
     elsif hash[:linked_resource_type] =~ /discussion|topic/i
-      topic = self.context.discussion_topics.find_by_migration_id(hash[:migration_id]) if hash[:migration_id]
+      topic = self.context.discussion_topics.find_by_migration_id(hash[:linked_resource_id]) if hash[:linked_resource_id]
       if topic
         item = self.add_item({
           :title => hash[:title] || hash[:linked_resource_title],
@@ -814,8 +808,9 @@ class ContextModule < ActiveRecord::Base
       # We don't know what this is
     end
     if item
-      item_map[hash[:item_migration_id]] = item if hash[:item_migration_id]
+      item_map[hash[:migration_id]] = item if hash[:migration_id]
       item.migration_id = hash[:migration_id]
+      item.new_tab = hash[:new_tab]
       item.position = (@item_migration_position ||= self.content_tags.active.map(&:position).compact.max || 0)
       item.workflow_state = 'active'
       @item_migration_position += 1

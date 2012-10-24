@@ -238,4 +238,57 @@ describe Rubric do
       @result.mastery.should eql(true)
     end
   end
+
+  context "fractional_points" do
+    it "should allow fractional points" do
+      @rubric = Rubric.new(:context => @course)
+      @rubric.data = [
+        {
+          :points => 0.5,
+          :description => "Fraction row",
+          :id => 1,
+          :ratings => [
+            {
+              :points => 0.5,
+              :description => "Rockin'",
+              :criterion_id => 1,
+              :id => 2
+            },
+            {
+              :points => 0,
+              :description => "Lame",
+              :criterion_id => 1,
+              :id => 3
+            }
+          ]
+        }
+      ]
+      @rubric.save!
+
+      @rubric2 = Rubric.find(@rubric.id)
+      @rubric2.data.first[:points].should eql(0.5)
+      @rubric2.data.first[:ratings].first[:points].should eql(0.5)
+    end
+  end
+
+  it "should be cool about duplicate titles" do
+    course_with_teacher
+
+    r1 = Rubric.new :title => "rubric", :context => @course
+    r1.save!
+    r1.title.should eql "rubric"
+
+    r2 = Rubric.new :title => "rubric", :context => @course
+    r2.save!
+    r2.title.should eql "rubric (1)"
+
+    r1.destroy
+
+    r3 = Rubric.create! :title => "rubric", :context => @course
+    r3.title.should eql "rubric"
+
+    r3.title = "rubric"
+    r3.save!
+    r3.title.should eql "rubric"
+  end
 end

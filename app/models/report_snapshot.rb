@@ -20,70 +20,65 @@ class ReportSnapshot < ActiveRecord::Base
   STATS_COLLECTION_URL = "https://stats.instructure.com/stats_collection"
   REPORT_TO_SEND = "counts_progressive_overview"
 
+  belongs_to :account
+
   attr_accessible :report_type
 
   after_create :push_to_instructure_if_collection_enabled
+  before_save :serialize_data
 
   def self.report_value_over_time(report, key)
     items = []
+    now = Time.now.utc.to_i
     report['monthly'].each do |month|
       if month[key]
-        date = Date
         stamp = ((Time.utc(month['year'], month['month'], 1).to_date >> 1) - 1.day).to_time.to_i
-        items << [stamp*1000, month[key]]
+        next if stamp > now
+        items << [stamp.to_i*1000, month[key]]
       end
     end
     report['weekly'].each do |week|
       if week[key]
         stamp = (week['week'] * 604800) + ((week['year'] - 1970) * 31556926)
+        next if stamp > now
         items << [stamp*1000, week[key]]
       end
     end
     items.sort_by(&:first).once_per(&:first)
   end
   
-  def self.get_account_detail_over_time(type, id, key)
-    report = get_account_details_by_type_and_id(type, id)
-    report_value_over_time(report, key)
-  end
-  
-  def self.get_category_detail_over_time(type, category, key)
-    count_data = ReportSnapshot.get_last_data_by_type(type)
-    category_details = count_data[category] if count_data
-    if count_data and category_details
-      category_details['generated_at'] = count_data['generated_at']
+  def report_value_over_time(*args)
+    if args.length == 1
+      ReportSnapshot.report_value_over_time(self.data, args.first)
+    else
+      ReportSnapshot.report_value_over_time(self.data[args.first], args.last)
     end
-    report_value_over_time(category_details, key)
   end
-  
-  def self.get_last_data_by_type(type)
-    count_data = nil
-    begin
-      snap = ReportSnapshot.find_last_by_report_type(type)
-      if snap
-        count_data = JSON.parse(snap.data)
-        count_data['generated_at'] = Time.at(count_data['generated_at'].to_i/1000)
-      end
-    rescue
-      nil
+
+  def data
+    if !@data
+      @data = JSON.parse(read_attribute(:data) || '{}')
+      @data['generated_at'] = Time.at(@data['generated_at'].to_i/1000) if @data['generated_at']
     end
-    count_data
+    @data
   end
-  
-  def self.get_account_details_by_type_and_id(type, id)
-    school_details = nil
-    begin
-      count_data = ReportSnapshot.get_last_data_by_type(type)
-      school_details = count_data['detailed'][id.to_s] if count_data and count_data['detailed']
-      if count_data and school_details
-        school_details['generated_at'] = count_data['generated_at']
-      end
-    rescue
-      nil
-    end
-    school_details
+
+  def data=(new_data)
+    @data = new_data || {}
   end
-  
+
+  def serialize_data
+    return unless @data
+    data = @data.dup
+    data['generated_at'] = data['generated_at'].to_i * 1000 if data['generated_at']
+    write_attribute(:data, data.to_json)
+  end
+
+  named_scope :detailed, :conditions => { :report_type => 'counts_detailed' }
+  named_scope :progressive, :conditions => { :report_type => 'counts_progressive_detailed' }
+  named_scope :overview, :conditions => { :report_type => 'counts_overview' }
+  named_scope :progressive_overview, :conditions => { :report_type => 'counts_progressive_overview' }
+
   def push_to_instructure_if_collection_enabled
     begin
       return if self.report_type != REPORT_TO_SEND
@@ -102,7 +97,7 @@ class ReportSnapshot < ActiveRecord::Base
           "collection_type" => collection_type,
           "installation_uuid" => installation_uuid,
           "report_type" => self.report_type,
-          "data" => self.data,
+          "data" => read_attribute(:data),
           "rails_env" => RAILS_ENV
         }
 

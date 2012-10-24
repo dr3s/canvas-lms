@@ -49,11 +49,23 @@ class QuizQuestion < ActiveRecord::Base
   def question_data=(data)
     if data.is_a?(String)
       data = ActiveSupport::JSON.decode(data) rescue nil
+    elsif data.class == Hash
+      data = data.with_indifferent_access
     end
     return if data == self.question_data
     data = AssessmentQuestion.parse_question(data, self.assessment_question)
     data[:name] = data[:question_name]
     write_attribute(:question_data, data)
+  end
+  
+  def question_data
+    if data = read_attribute(:question_data)
+      if data.class == Hash
+        data = write_attribute(:question_data, data.with_indifferent_access)
+      end
+    end
+    
+    data
   end
   
   def delete_assessment_question
@@ -101,7 +113,7 @@ class QuizQuestion < ActiveRecord::Base
     self.attributes.delete_if{|k,v| [:id, :quiz_id, :quiz_group_id, :question_data].include?(k.to_sym) }.each do |key, val|
       dup.send("#{key}=", val)
     end
-    data = self.question_data || {}
+    data = self.question_data || HashWithIndifferentAccess.new
     data.delete(:id)
     if options[:old_context] && options[:new_context]
       data = QuizQuestion.migrate_question_hash(data, options)
@@ -125,6 +137,9 @@ class QuizQuestion < ActiveRecord::Base
   end
 
   def self.import_from_migration(hash, context, quiz=nil, quiz_group=nil)
+    unless hash[:prepped_for_import]
+      AssessmentQuestion.prep_for_import(hash, context)
+    end
     question_data = self.connection.quote hash.to_yaml
     query = "INSERT INTO quiz_questions (quiz_id, quiz_group_id, assessment_question_id, question_data, created_at, updated_at, migration_id, position)"
     aq_id = hash['assessment_question_id'] ? hash['assessment_question_id'] : 'NULL'

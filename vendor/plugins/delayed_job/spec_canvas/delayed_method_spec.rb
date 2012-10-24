@@ -1,10 +1,10 @@
-require File.expand_path("../spec_helper", __FILE__)
-
-describe 'random ruby objects' do
-   before :each do
-     Delayed::Worker.queue = nil
-     Delayed::Job.delete_all
-   end
+shared_examples_for 'random ruby objects' do
+  def set_queue(name)
+    old_name = Delayed::Worker.queue
+    Delayed::Worker.queue = name
+  ensure
+    Delayed::Worker.queue = old_name
+  end
 
   it "should respond_to :send_later method" do
     Object.new.respond_to?(:send_later)
@@ -15,19 +15,19 @@ describe 'random ruby objects' do
   end
 
   it "should add a new entry to the job table when send_later is called on it" do
-    lambda { Object.new.send_later(:to_s) }.should change { Delayed::Job.count }.by(1)
+    lambda { Object.new.send_later(:to_s) }.should change { Delayed::Job.jobs_count(:current) }.by(1)
   end
 
   it "should add a new entry to the job table when send_later_with_queue is called on it" do
-    lambda { Object.new.send_later_with_queue(:to_s, "testqueue") }.should change { Delayed::Job.count }.by(1)
+    lambda { Object.new.send_later_with_queue(:to_s, "testqueue") }.should change { Delayed::Job.jobs_count(:current, "testqueue") }.by(1)
   end
 
   it "should add a new entry to the job table when send_later is called on the class" do
-    lambda { Object.send_later(:to_s) }.should change { Delayed::Job.count }.by(1)
+    lambda { Object.send_later(:to_s) }.should change { Delayed::Job.jobs_count(:current) }.by(1)
   end
 
   it "should add a new entry to the job table when send_later_with_queue is called on the class" do
-    lambda { Object.send_later_with_queue(:to_s, "testqueue") }.should change { Delayed::Job.count }.by(1)
+    lambda { Object.send_later_with_queue(:to_s, "testqueue") }.should change { Delayed::Job.jobs_count(:current, "testqueue") }.by(1)
   end
 
   context "class methods" do
@@ -39,10 +39,10 @@ describe 'random ruby objects' do
           add_send_later_methods :test_method, {}, true
         end
         obj = TestObject.new
-        lambda { obj.test_method }.should change { Delayed::Job.count }.by(1)
-        lambda { obj.test_method_with_send_later }.should change { Delayed::Job.count }.by(1)
+        lambda { obj.test_method }.should change { Delayed::Job.jobs_count(:current) }.by(1)
+        lambda { obj.test_method_with_send_later }.should change { Delayed::Job.jobs_count(:current) }.by(1)
         obj.ran.should be_false
-        lambda { obj.test_method_without_send_later }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method_without_send_later }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should be_true
       end
 
@@ -53,13 +53,13 @@ describe 'random ruby objects' do
           add_send_later_methods :test_method, {}, false
         end
         obj = TestObject.new
-        lambda { obj.test_method_with_send_later }.should change { Delayed::Job.count }.by(1)
+        lambda { obj.test_method_with_send_later }.should change { Delayed::Job.jobs_count(:current) }.by(1)
         obj.ran.should be_false
-        lambda { obj.test_method }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should be_true
         obj.ran = false
         obj.ran.should be_false
-        lambda { obj.test_method_without_send_later }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method_without_send_later }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should be_true
       end
 
@@ -130,10 +130,10 @@ describe 'random ruby objects' do
           add_send_later_methods :test_method?, {}, true
         end
         obj = TestObject.new
-        lambda { obj.test_method? }.should change { Delayed::Job.count }.by(1)
-        lambda { obj.test_method_with_send_later? }.should change { Delayed::Job.count }.by(1)
+        lambda { obj.test_method? }.should change { Delayed::Job.jobs_count(:current) }.by(1)
+        lambda { obj.test_method_with_send_later? }.should change { Delayed::Job.jobs_count(:current) }.by(1)
         obj.ran.should be_false
-        lambda { obj.test_method_without_send_later? }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method_without_send_later? }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should be_true
       end
 
@@ -144,13 +144,13 @@ describe 'random ruby objects' do
           add_send_later_methods :test_method?, {}, false
         end
         obj = TestObject.new
-        lambda { obj.test_method_with_send_later? }.should change { Delayed::Job.count }.by(1)
+        lambda { obj.test_method_with_send_later? }.should change { Delayed::Job.jobs_count(:current) }.by(1)
         obj.ran.should be_false
-        lambda { obj.test_method? }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method? }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should be_true
         obj.ran = false
         obj.ran.should be_false
-        lambda { obj.test_method_without_send_later? }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method_without_send_later? }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should be_true
       end
 
@@ -161,10 +161,10 @@ describe 'random ruby objects' do
           add_send_later_methods :test_method=, {}, true
         end
         obj = TestObject.new
-        lambda { obj.test_method = 3 }.should change { Delayed::Job.count }.by(1)
-        lambda { obj.test_method_with_send_later = 4 }.should change { Delayed::Job.count }.by(1)
+        lambda { obj.test_method = 3 }.should change { Delayed::Job.jobs_count(:current) }.by(1)
+        lambda { obj.test_method_with_send_later = 4 }.should change { Delayed::Job.jobs_count(:current) }.by(1)
         obj.ran.should be_nil
-        lambda { obj.test_method_without_send_later = 5 }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method_without_send_later = 5 }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should == 5
       end
 
@@ -175,11 +175,11 @@ describe 'random ruby objects' do
           add_send_later_methods :test_method=, {}, false
         end
         obj = TestObject.new
-        lambda { obj.test_method_with_send_later = 1 }.should change { Delayed::Job.count }.by(1)
+        lambda { obj.test_method_with_send_later = 1 }.should change { Delayed::Job.jobs_count(:current) }.by(1)
         obj.ran.should be_nil
-        lambda { obj.test_method = 2 }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method = 2 }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should == 2
-        lambda { obj.test_method_without_send_later = 3 }.should_not change { Delayed::Job.count }
+        lambda { obj.test_method_without_send_later = 3 }.should_not change { Delayed::Job.jobs_count(:current) }
         obj.ran.should == 3
       end
 
@@ -281,13 +281,10 @@ describe 'random ruby objects' do
 
   it "should call send later on methods which are wrapped with handle_asynchronously" do
     story = Story.create :text => 'Once upon...'
-  
-    Delayed::Job.count.should == 0
-  
-    story.whatever(1, 5)
-  
-    Delayed::Job.count.should == 1
-    job =  Delayed::Job.find(:first)
+
+    job = nil
+    expect { job = story.whatever(1, 5) }.to change { Delayed::Job.jobs_count(:current) }.by(1)
+
     job.payload_object.class.should   == Delayed::PerformableMethod
     job.payload_object.method.should  == :whatever_without_send_later
     job.payload_object.args.should    == [1, 5]
@@ -296,29 +293,29 @@ describe 'random ruby objects' do
 
   it "should call send later on methods which are wrapped with handle_asynchronously_with_queue" do
     story = Story.create :text => 'Once upon...'
-  
-    Delayed::Job.count.should == 0
-  
-    story.whatever_else(1, 5)
-  
-    Delayed::Job.count.should == 1
-    job =  Delayed::Job.find(:first)
+
+    job = nil
+    expect { job = story.whatever_else(1, 5) }.to change { Delayed::Job.jobs_count(:current, "testqueue") }.by(1)
+
     job.payload_object.class.should   == Delayed::PerformableMethod
     job.payload_object.method.should  == :whatever_else_without_send_later
     job.payload_object.args.should    == [1, 5]
     job.payload_object.perform.should == 'Once upon...'
   end
-  
+
   context "send_later" do
     it "should use the default queue if there is one" do
-      Delayed::Worker.queue = "testqueue"
-      job = "string".send_later :reverse
-      job.queue.should == "testqueue"
+      set_queue("testqueue") do
+        job = "string".send_later :reverse
+        job.queue.should == "testqueue"
+
+        job2 = "string".send_later :reverse, :queue => nil
+        job2.queue.should == "testqueue"
+      end
     end
-    
-    it "should have nil queue if there is not a default" do
-      job = "string".send_later :reverse
-      job.queue.should == nil
+
+    it "should require a queue" do
+      expect { set_queue(nil) }.to raise_error(ArgumentError)
     end
   end
 
@@ -326,13 +323,13 @@ describe 'random ruby objects' do
     it "should queue a new job" do
       lambda do
         "string".send_at(1.hour.from_now, :length)
-      end.should change { Delayed::Job.count }.by(1)
+      end.should change { Delayed::Job.jobs_count(:future) }.by(1)
     end
     
     it "should schedule the job in the future" do
       time = 1.hour.from_now
       job = "string".send_at(time, :length)
-      job.run_at.should == time
+      job.run_at.to_i.should == time.to_i
     end
     
     it "should store payload as PerformableMethod" do
@@ -344,14 +341,10 @@ describe 'random ruby objects' do
     end
     
     it "should use the default queue if there is one" do
-      Delayed::Worker.queue = "testqueue"
-      job = "string".send_at 1.hour.from_now, :reverse
-      job.queue.should == "testqueue"
-    end
-    
-    it "should have nil queue if there is not a default" do
-      job = "string".send_at 1.hour.from_now, :reverse
-      job.queue.should == nil
+      set_queue("testqueue") do
+        job = "string".send_at 1.hour.from_now, :reverse
+        job.queue.should == "testqueue"
+      end
     end
   end
 
@@ -359,19 +352,20 @@ describe 'random ruby objects' do
     it "should queue a new job" do
       lambda do
         "string".send_at_with_queue(1.hour.from_now, :length, "testqueue")
-      end.should change { Delayed::Job.count }.by(1)
+      end.should change { Delayed::Job.jobs_count(:future, "testqueue") }.by(1)
     end
     
     it "should schedule the job in the future" do
       time = 1.hour.from_now
       job = "string".send_at_with_queue(time, :length, "testqueue")
-      job.run_at.should == time
+      job.run_at.to_i.should == time.to_i
     end
     
     it "should override the default queue" do
-      Delayed::Worker.queue = "default_queue"
-      job = "string".send_at_with_queue(1.hour.from_now, :length, "testqueue")
-      job.queue.should == "testqueue"
+      set_queue("default_queue") do
+        job = "string".send_at_with_queue(1.hour.from_now, :length, "testqueue")
+        job.queue.should == "testqueue"
+      end
     end
     
     it "should store payload as PerformableMethod" do

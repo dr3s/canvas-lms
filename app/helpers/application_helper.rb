@@ -39,6 +39,8 @@ module ApplicationHelper
   end
 
   def keyboard_navigation(keys)
+    # TODO: move this to JS, currently you have to know what shortcuts the JS has defined
+    # making it very likely this list will not reflect the key bindings
     content = "<ul class='navigation_list' tabindex='-1'>\n"
     keys.each do |hash|
       content += "  <li>\n"
@@ -126,7 +128,7 @@ module ApplicationHelper
         html << I18n.t('messages.visit_modules_page', "*Visit the course modules page for information on how to unlock this content.*",
           :wrapper => "<a href='#{context_url(context, :context_context_modules_url)}'>\\1</a>")
         html << "<a href='#{context_url(context, :context_context_module_prerequisites_needing_finishing_url, obj.id, hash[:asset_string])}' style='display: none;' id='module_prerequisites_lookup_link'>&nbsp;</a>".html_safe
-        jammit_js :prerequisites_lookup
+        js_bundle :prerequisites_lookup
       end
       return html
     else
@@ -147,17 +149,33 @@ module ApplicationHelper
     end
   end
 
-  def avatar_image(user_id, height=50)
+  def avatar_image(user_or_id, width=50)
+    user_id = user_or_id.is_a?(User) ? user_or_id.id : user_or_id
+    user = user_or_id.is_a?(User) && user_or_id
     if session["reported_#{user_id}"]
-      image_tag "no_pic.gif"
+      image_tag "messages/avatar-50.png"
     else
-      image_tag(avatar_image_url(user_id || 0), :style => "height: #{height}px;", :alt => '')
+      avatar_settings = @domain_root_account && @domain_root_account.settings[:avatars] || 'enabled'
+      image_url, alt_tag = Rails.cache.fetch(Cacher.inline_avatar_cache_key(user_id, avatar_settings)) do
+        if !user && user_id.to_i > 0
+          user = User.find(user_id)
+        end
+        if user
+          url = avatar_url_for_user(user)
+        else
+          url = "messages/avatar-50.png"
+        end
+        alt = user ? user.short_name : ''
+        [url, alt]
+      end
+      image_tag(image_url, :style => "width: #{width}px; min-height: #{(width/1.6).to_i}px; max-height: #{(width*1.6).to_i}px", :alt => alt_tag)
     end
   end
 
-  def avatar(user_id, context_code, height=50)
+  def avatar(user_or_id, context_code, width=50)
+    user_id = user_or_id.is_a?(User) ? user_or_id.id : user_or_id
     if service_enabled?(:avatars)
-      link_to(avatar_image(user_id, height), "#{context_prefix(context_code)}/users/#{user_id}", :style => 'z-index: 2; position: relative;')
+      link_to(avatar_image(user_or_id, width), "#{context_prefix(context_code)}/users/#{user_id}", :style => 'z-index: 2; position: relative;', :class => 'avatar')
     end
   end
 
@@ -203,7 +221,7 @@ module ApplicationHelper
   end
 
   def message_user_path(user)
-    conversations_path + "#/conversations?user_id=#{user.id}"
+    conversations_path(:user_id => user.id)
   end
 
   def hidden(include_style=false)
@@ -257,9 +275,11 @@ module ApplicationHelper
     return if @wiki_sidebar_data
     logger.warn "database lookups happening in view code instead of controller code for wiki sidebar (load_wiki_sidebar)"
     @wiki_sidebar_data = {}
-    includes = [:default_wiki_wiki_pages, :active_assignments, :active_discussion_topics, :active_quizzes, :active_context_modules]
+    includes = [:active_assignments, :active_discussion_topics, :active_quizzes, :active_context_modules]
     includes.each{|i| @wiki_sidebar_data[i] = @context.send(i).scoped({:limit => 150}) if @context.respond_to?(i) }
     includes.each{|i| @wiki_sidebar_data[i] ||= [] }
+    @wiki_sidebar_data[:wiki_pages] = @context.wiki.wiki_pages.active.scoped(:order => 'title', :limit => 150) if @context.respond_to?(:wiki)
+    @wiki_sidebar_data[:wiki_pages] ||= []
     @wiki_sidebar_data[:root_folders] = Folder.root_folders(@context)
     @wiki_sidebar_data
   end
@@ -277,7 +297,6 @@ module ApplicationHelper
   def js_blocks; @js_blocks ||= []; end
   def render_js_blocks
     output = js_blocks.inject('') do |str, e|
-      add_i18n_scoping!(e[:i18n_scope].to_s, e[:contents]) if e[:i18n_scope]
       # print file and line number for debugging in development mode.
       value = ""
       value << "<!-- BEGIN SCRIPT BLOCK FROM: " + e[:file_and_line] + " --> \n" if Rails.env == "development"
@@ -288,66 +307,76 @@ module ApplicationHelper
     raw(output)
   end
 
+  def hidden_dialog(id, &block)
+    content = capture(&block)
+    if !Rails.env.production? && hidden_dialogs[id] && hidden_dialogs[id] != content
+      raise "Attempted to capture a hidden dialog with #{id} and different content!"
+    end
+    hidden_dialogs[id] = capture(&block)
+  end
+  def hidden_dialogs; @hidden_dialogs ||= {}; end
+  def render_hidden_dialogs
+    output = hidden_dialogs.keys.sort.inject('') do |str, id|
+      str << "<div id='#{id}' style='display: none;''>" << hidden_dialogs[id] << "</div>"
+    end
+    raw(output)
+  end
+
   class << self
     attr_accessor :cached_translation_blocks
   end
 
-  def add_i18n_scoping!(scope, contents)
-    @included_i18n_scopes ||= []
-    translations = unless @included_i18n_scopes.include?(scope)
-      @included_i18n_scopes << scope
-      js_translations_for(scope)
-    end
-    contents.gsub!(/(<script[^>]*>)([^<].*?)(<\/script>)/m, "\\1\n#{translations}I18n.scoped(#{scope.inspect}, function(I18n){\n\\2\n});\n\\3")
-  end
-
-  def js_translations_for(scope)
-    scope = [I18n.locale] + scope.split(/\./).map(&:to_sym)
-    (ApplicationHelper.cached_translation_blocks ||= {})[scope] ||=
-    if scoped_translations = scope.inject(I18n.backend.send(:translations)) { |hash, key| hash && hash[key] }
-      last_key = scope.last
-      translations = {}
-      scope[0..scope.size-2].inject(translations) { |hash, key|
-        hash[key] ||= {}
-      }[last_key] = scoped_translations
-      <<-TRANSLATIONS
-var I18n = I18n || {};
-(function($) {
-  var translations = #{translations.to_json};
-  if (I18n.translations) {
-    $.extend(true, I18n.translations, translations);
-  } else {
-    I18n.translations = translations;
-  }
-})(jQuery);
-      TRANSLATIONS
+  # See `js_base_url`
+  def use_optimized_js?
+    if ENV['USE_OPTIMIZED_JS'] == 'true'
+      # allows overriding by adding ?debug_assets=1 or ?debug_js=1 to the url
+      # (debug_assets is also used by jammit => you'll get unpackaged css AND js)
+      !(params[:debug_assets] || params[:debug_js])
     else
-      ''
+      # allows overriding by adding ?optimized_js=1 to the url
+      params[:optimized_js] || false
     end
   end
 
-  def jammit_js_bundles; @jammit_js_bundles ||= []; end
-  def jammit_js(*args)
-    Array(args).flatten.each do |bundle|
-      jammit_js_bundles << bundle unless jammit_js_bundles.include? bundle
-    end
+  # Determines the location from which to load JavaScript assets
+  #
+  # uses optimized:
+  #  * when ENV['USE_OPTIMIZED_JS'] is true
+  #  * or when ?optimized_js=true is present in the url. Run `rake js:build` to
+  #    build the optimized files
+  #
+  # uses non-optimized:
+  #   * when ENV['USE_OPTIMIZED_JS'] is false
+  #   * or when ?debug_assets=true is present in the url
+  def js_base_url
+    use_optimized_js? ? '/optimized' : '/javascripts'
   end
 
-  def jammit_css_bundles; @jammit_css_bundles ||= []; end
-  def jammit_css(*args)
-    Array(args).flatten.each do |bundle|
-      jammit_css_bundles << bundle unless jammit_css_bundles.include? bundle
+  # Returns a <script> tag for each registered js_bundle
+  def include_js_bundles
+    paths = js_bundles.inject([]) do |ary, (bundle, plugin)|
+      base_url = js_base_url
+      base_url += "/plugins/#{plugin}" if plugin
+      ary.concat(Canvas::RequireJs.extensions_for(bundle, 'plugins/')) unless use_optimized_js?
+      ary << "#{base_url}/compiled/bundles/#{bundle}.js"
+    end
+    javascript_include_tag *paths
+  end
+
+  def include_css_bundles
+    unless jammit_css_bundles.empty?
+      bundles = jammit_css_bundles.map{ |(bundle,plugin)| plugin ? "plugins_#{plugin}_#{bundle}" : bundle }
+      include_stylesheets(*bundles)
     end
   end
 
   def section_tabs
     @section_tabs ||= begin
       if @context
-        Rails.cache.fetch([@context, @current_user, "section_tabs", I18n.locale].cache_key) do
+        html = []
+        tabs = Rails.cache.fetch([@context, @current_user, @domain_root_account, "section_tabs_hash", I18n.locale].cache_key) do
           if @context.respond_to?(:tabs_available) && !(tabs = @context.tabs_available(@current_user, :session => session, :root_account => @domain_root_account)).empty?
-            html = []
-            html << '<nav role="navigation"><ul id="section-tabs">'
-            tabs = tabs.select do |tab|
+            tabs.select do |tab|
               if (tab[:id] == @context.class::TAB_CHAT rescue false)
                 tab[:href] && tab[:label] && feature_enabled?(:tinychat)
               elsif (tab[:id] == @context.class::TAB_COLLABORATIONS rescue false)
@@ -358,21 +387,28 @@ var I18n = I18n || {};
                 tab[:href] && tab[:label]
               end
             end
-            tabs.each do |tab|
-              path = nil
-              if tab[:args]
-                path = send(tab[:href], *tab[:args])
-              elsif tab[:no_args]
-                path = send(tab[:href])
-              else
-                path = send(tab[:href], @context)
-              end
-              html << "<li class='section #{"selected" if tab[:id] == @active_tab} #{"hidden" if tab[:hidden] || tab[:hidden_unused] }'>" + link_to(tab[:label], path, :class => tab[:css_class].to_css_class) + "</li>" if tab[:href]
-            end
-            html << "</ul></nav>"
-            html.join("")
+          else
+            []
           end
         end
+        return '' if tabs.empty?
+        html << '<nav role="navigation" aria-label="context"><ul id="section-tabs">'
+        tabs.each do |tab|
+          path = nil
+          if tab[:args]
+            path = send(tab[:href], *tab[:args])
+          elsif tab[:no_args]
+            path = send(tab[:href])
+          else
+            path = send(tab[:href], @context)
+          end
+          hide = tab[:hidden] || tab[:hidden_unused]
+          class_name = tab[:css_class].to_css_class
+          class_name += ' active' if @active_tab == tab[:css_class]
+          html << "<li class='section #{"hidden" if hide }'>" + link_to(tab[:label], path, :class => class_name) + "</li>" if tab[:href]
+        end
+        html << "</ul></nav>"
+        html.join("")
       end
     end
     raw(@section_tabs)
@@ -408,6 +444,19 @@ var I18n = I18n || {};
     @domain_root_account.manually_created_courses_account.grants_rights?(user, session, :create_courses, :manage_courses).values.any?
   end
 
+  # Public: Create HTML for a sidebar button w/ icon.
+  #
+  # url - The url the button should link to.
+  # img - The path to an image (e.g. 'icon.png')
+  # label - The text to display on the button (should already be internationalized).
+  #
+  # Returns an HTML string.
+  def sidebar_button(url, label, img = nil)
+    link_to(url, :class => 'button button-sidebar-wide') do
+      img ? image_tag(img) + label : label
+    end
+  end
+
   def hash_get(hash, key, default=nil)
     if hash
       if hash[key.to_s] != nil
@@ -441,6 +490,7 @@ var I18n = I18n || {};
       :error_id                 => @error && @error.id,
       :disableGooglePreviews    => !service_enabled?(:google_docs_previews),
       :disableScribdPreviews    => !feature_enabled?(:scribd),
+      :disableCrocodocPreviews  => !feature_enabled?(:crocodoc),
       :logPageViews             => !@body_class_no_headers,
       :maxVisibleEditorButtons  => 3,
       :editorButtons            => editor_buttons,
@@ -463,8 +513,8 @@ var I18n = I18n || {};
         {
           :name => tool.label_for(:editor_button, nil),
           :id => tool.id,
-          :url => tool.settings[:editor_button][:url],
-          :icon_url => tool.settings[:editor_button][:icon_url],
+          :url => tool.settings[:editor_button][:url] || tool.url,
+          :icon_url => tool.settings[:editor_button][:icon_url] || tool.settings[:icon_url],
           :width => tool.settings[:editor_button][:selection_width],
           :height => tool.settings[:editor_button][:selection_height]
         }
@@ -507,7 +557,7 @@ var I18n = I18n || {};
       child_folders = if opts[:all_folders]
                         opts[:all_folders].select {|f| f.parent_folder_id == folder.id }
                       else
-                        folder.active_sub_folders
+                        folder.active_sub_folders.by_position
                       end
       if opts[:max_depth].nil? || opts[:depth] < opts[:max_depth]
         folders_as_options(child_folders, opts.merge({:depth => opts[:depth] + 1}))
@@ -526,6 +576,12 @@ var I18n = I18n || {};
     concat(t(*args))
   end
 
+  def jt(key, default, js_options='{}')
+    full_key = key =~ /\A#/ ? key.sub(/\A#/, '') : i18n_scope + '.' + key
+    translated_default = I18n.backend.send(:lookup, I18n.locale, full_key) || default # string or hash
+    raw "I18n.scoped(#{i18n_scope.to_json}).t(#{key.to_json}, #{translated_default.to_json}, #{js_options})"
+  end
+
   def join_title(*parts)
     parts.join(t('#title_separator', ': '))
   end
@@ -539,15 +595,8 @@ var I18n = I18n || {};
   end
 
   def map_courses_for_menu(courses)
-    # so we can display the term for duplicate course names
-    name_counts = {}
-    courses.each do |course|
-      name_counts[course.short_name] ||= 0
-      name_counts[course.short_name] += 1
-    end
-
     mapped = courses.map do |course|
-      term = course.enrollment_term.name if (name_counts[course.short_name] > 1 && !course.enrollment_term.default_term?)
+      term = course.enrollment_term.name if !course.enrollment_term.default_term?
       subtitle = (course.primary_enrollment_state == 'invited' ?
                   before_label('#shared.menu_enrollment.labels.invited_as', 'Invited as') :
                   before_label('#shared.menu_enrollment.labels.enrolled_as', "Enrolled as")
@@ -568,17 +617,13 @@ var I18n = I18n || {};
   def menu_courses_locals
     courses = @current_user.menu_courses
     all_courses_count = @current_user.courses_with_primary_enrollment.size
-    too_many_courses = all_courses_count > courses.length
-    customizable = too_many_courses || @current_user.favorite_courses.first.present?
-
     {
       :collection             => map_courses_for_menu(courses),
       :collection_size        => all_courses_count,
       :more_link_for_over_max => courses_path,
       :title                  => t('#menu.my_courses', "My Courses"),
       :link_text              => raw(t('#layouts.menu.view_all_enrollments', 'View all courses')),
-      :too_many_courses       => too_many_courses,
-      :edit                   => customizable && t("#menu.customize", "Customize")
+      :edit                   => t("#menu.customize", "Customize")
     }
   end
 
@@ -624,4 +669,115 @@ var I18n = I18n || {};
     end
   end
 
+  def help_link
+    url = ((@domain_root_account && @domain_root_account.settings[:support_url]) || (Account.default && Account.default.settings[:support_url]))
+    show_feedback_link = Setting.get_cached("show_feedback_link", "false") == "true"
+    css_classes = []
+    css_classes << "support_url" if url
+    css_classes << "help_dialog_trigger" if show_feedback_link
+    if url || show_feedback_link
+      link_to t('#links.help', "Help"), url || '#',
+        :class => css_classes.join(" "),
+        'data-track-category' => "help system",
+        'data-track-label' => 'help button'
+    end
+  end
+
+  def account_context(context)
+    if context.is_a?(Account)
+      context
+    elsif context.is_a?(Course) || context.is_a?(CourseSection)
+      account_context(context.account)
+    elsif context.is_a?(Group)
+      account_context(context.context)
+    end
+  end
+
+  def get_global_includes
+    return @global_includes if defined?(@global_includes)
+    @global_includes = [Account.site_admin.global_includes_hash]
+    @global_includes << @domain_root_account.global_includes_hash if @domain_root_account.present?
+    if @domain_root_account.try(:sub_account_includes?)
+      # get the deepest account to start looking for branding
+      if acct = account_context(@context)
+        key = [acct.id, 'account_context_global_includes'].cache_key
+        includes = Rails.cache.fetch(key, :expires_in => 15.minutes) do
+          acct.account_chain.reverse.map(&:global_includes_hash)
+        end
+        @global_includes.concat(includes)
+      elsif @current_user.present?
+        key = [@domain_root_account.id, 'common_account_global_includes', @current_user.id].cache_key
+        includes = Rails.cache.fetch(key, :expires_in => 15.minutes) do
+          @current_user.common_account_chain(@domain_root_account).map(&:global_includes_hash)
+        end
+        @global_includes.concat(includes)
+      end
+    end
+    @global_includes.uniq!
+    @global_includes.compact!
+    @global_includes
+  end
+
+  def include_account_js
+    includes = get_global_includes.inject([]) do |js_includes, global_include|
+      js_includes << "'#{global_include[:js]}'" if global_include[:js].present?
+      js_includes
+    end
+    if includes.length > 0
+      str = <<-ENDSCRIPT
+        (function() {
+          var inject = function(src) {
+            var s = document.createElement('script');
+            s.src = src;
+            s.type = 'text/javascript';
+            document.body.appendChild(s);
+          };
+          var srcs = [#{includes.join(', ')}];
+          require(['jquery'], function() {
+            for (var i = 0, l = srcs.length; i < l; i++) {
+              inject(srcs[i]);
+            }
+          });
+        })();
+      ENDSCRIPT
+      content_tag(:script, str, {}, false)
+    end
+  end
+
+  def include_account_css
+    includes = get_global_includes.inject([]) do |css_includes, global_include|
+      css_includes << global_include[:css] if global_include[:css].present?
+      css_includes
+    end
+    if includes.length > 0
+      includes << { :media => 'all' }
+      stylesheet_link_tag *includes
+    end
+  end
+
+  # this should be the same as friendlyDatetime in handlebars_helpers.coffee
+  def friendly_datetime(datetime, opts={})
+    attributes = { :title => datetime }
+    attributes[:pubdate] = true if opts[:pubdate]
+    content_tag(:time, attributes) do
+      datetime_string(datetime)
+    end
+  end
+
+  require 'digest'
+
+  # create a checksum of an array of objects' cache_key values.
+  # useful if we have a whole collection of objects that we want to turn into a
+  # cache key, so that we don't make an overly-long cache key.
+  # if you can avoid loading the list at all, that's even better, of course.
+  def collection_cache_key(collection)
+    keys = collection.map { |element| element.cache_key }
+    Digest::MD5.hexdigest(keys.join('/'))
+  end
+
+  def add_uri_scheme_name(uri)
+    noSchemeName = !uri.match(/^(.+):\/\/(.+)/)
+    uri = 'http://' + uri if noSchemeName
+    uri
+  end
 end

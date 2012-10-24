@@ -372,27 +372,35 @@ module Technoweenie # :nodoc:
               read_bytes = true
             end
           rescue => e
+          ensure
+            io.close if file_from_path
           end
           self.md5 = read_bytes ? digest.hexdigest : nil
-          if self.md5 && ns = self.infer_namespace
-            if existing_attachment = Attachment.find_all_by_md5_and_namespace(self.md5, ns).detect{|a| (self.new_record? || a.id != self.id) && !a.root_attachment_id && a.content_type == self.content_type }
-              self.temp_path = nil if respond_to?(:temp_path=)
-              self.temp_data = nil if respond_to?(:temp_data=)
-              write_attribute(:filename, nil) if respond_to?(:filename=)
-              self.root_attachment = existing_attachment
-            end
+          if existing_attachment = find_existing_attachment_for_md5
+            self.temp_path = nil if respond_to?(:temp_path=)
+            self.temp_data = nil if respond_to?(:temp_data=)
+            write_attribute(:filename, nil) if respond_to?(:filename=)
+            self.root_attachment = existing_attachment
           end
           file_data
         else
           return nil if file_data.nil? || file_data.size == 0
           self.content_type = file_data.content_type
           self.filename     = file_data.original_filename if respond_to?(:filename)
-          unless file_data.responds_to?(:path)
+          unless file_data.respond_to?(:path)
             file_data.rewind
             self.temp_data = file_data.read
           else
             self.temp_path = file_data
           end
+        end
+      end
+
+      def find_existing_attachment_for_md5
+        if self.md5.present? && ns = self.infer_namespace
+          scope = Attachment.scoped(:conditions => ["md5 = ? AND namespace = ? AND root_attachment_id IS NULL AND content_type = ?", md5, ns, content_type])
+          scope = scope.scoped(:conditions => ["id <> ?", id]) unless new_record?
+          scope.first
         end
       end
 

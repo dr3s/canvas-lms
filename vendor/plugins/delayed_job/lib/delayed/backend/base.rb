@@ -7,13 +7,25 @@ module Delayed
     end
 
     module Base
+      ON_HOLD_LOCKED_BY = 'on hold'
       ON_HOLD_COUNT = 50
 
       def self.included(base)
         base.extend ClassMethods
+        base.default_priority = Delayed::NORMAL_PRIORITY
+      end
+
+      attr_writer :current_shard
+
+      def current_shard
+        @current_shard || Shard.default
       end
 
       module ClassMethods
+        attr_accessor :batches
+        attr_accessor :batch_enqueue_args
+        attr_accessor :default_priority
+
         # Add a job to the queue
         # The first argument should be an object that respond_to?(:perform)
         # The rest should be named arguments, these keys are expected:
@@ -28,17 +40,32 @@ module Delayed
           options = args.first || {}
           options[:priority] ||= self.default_priority
           options[:payload_object] = object
-          options[:queue] ||= Delayed::Worker.queue
+          options[:queue] = Delayed::Worker.queue unless options.key?(:queue)
           options[:max_attempts] ||= Delayed::Worker.max_attempts
+          options[:current_shard] = Shard.current
+
+          if options[:n_strand]
+            strand_name = options.delete(:n_strand)
+            num_strands = Setting.get_cached("#{strand_name}_num_strands", "1").to_i
+            strand_num = num_strands > 1 ? rand(num_strands) + 1 : 1
+            strand_name += ":#{strand_num}" if strand_num > 1
+            options[:strand] = strand_name
+          end
+
           if options[:singleton]
             options[:strand] = options.delete :singleton
-            self.transaction do
-              self.clear_strand!(options[:strand])
-              self.create(options)
-            end
+            job = self.create_singleton(options)
+          elsif batches && options.slice(:strand, :run_at).empty?
+            batch_enqueue_args = options.slice(*self.batch_enqueue_args)
+            batches[batch_enqueue_args] << options
+            return true
           else
-            self.create(options)
+            job = self.create(options)
           end
+
+          JobTracking.job_created(job)
+
+          job
         end
 
         def in_delayed_job?
@@ -47,6 +74,26 @@ module Delayed
 
         def in_delayed_job=(val)
           Thread.current[:in_delayed_job] = val
+        end
+
+        def check_queue(queue)
+          raise(ArgumentError, "queue name can't be blank") if queue.blank?
+        end
+
+        def check_priorities(min_priority, max_priority)
+          if min_priority && min_priority < Delayed::MIN_PRIORITY
+            raise(ArgumentError, "min_priority #{min_priority} can't be less than #{Delayed::MIN_PRIORITY}")
+          end
+          if max_priority && max_priority > Delayed::MAX_PRIORITY
+            raise(ArgumentError, "max_priority #{max_priority} can't be greater than #{Delayed::MAX_PRIORITY}")
+          end
+        end
+
+        # Get the current time (UTC)
+        # Note: This does not ping the DB to get the time, so all your clients
+        # must have syncronized clocks.
+        def db_time_now
+          Time.zone.now
         end
       end
 
@@ -80,6 +127,7 @@ module Delayed
       end
 
       def payload_object=(object)
+        @payload_object = object
         self['handler'] = object.to_yaml
         self['tag'] = if object.respond_to?(:tag)
           object.tag
@@ -95,6 +143,10 @@ module Delayed
         Delayed::Job.in_delayed_job = true
         payload_object.perform
         Delayed::Job.in_delayed_job = false
+      end
+
+      def batch?
+        payload_object.is_a?(Delayed::Batch::PerformableBatch)
       end
 
       # Unlock this job (note: not saved to DB)
@@ -121,7 +173,7 @@ module Delayed
       end
 
       def hold!
-        self.locked_by = 'on hold'
+        self.locked_by = ON_HOLD_LOCKED_BY
         self.locked_at = self.class.db_time_now
         self.attempts = ON_HOLD_COUNT
         self.save!
@@ -171,6 +223,7 @@ module Delayed
     protected
 
       def before_save
+        self.queue ||= Delayed::Worker.queue
         self.run_at ||= self.class.db_time_now
       end
 

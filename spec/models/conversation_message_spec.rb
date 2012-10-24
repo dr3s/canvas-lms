@@ -115,13 +115,12 @@ describe ConversationMessage do
       student = student_in_course.user
       student.associated_accounts << Account.default
       conversation = @teacher.initiate_conversation([student.id])
-      message = conversation.add_message("reprimanded!")
-      message.created_at = Time.at(0) # Jan 1, 1970 00:00:00 UTC
-      note = message.generate_user_note
+      ConversationMessage.any_instance.stubs(:current_time_from_proper_timezone).returns(Time.at(0))
+      conversation.add_message("reprimanded!", :generate_user_note => true)
       student.user_notes.size.should be(1)
-      student.user_notes.first.should eql(note)
+      note = student.user_notes.first
       note.creator.should eql(@teacher)
-      note.title.should eql("Private message, Jan  1, 1970")
+      note.title.should eql("Private message, Jan 1, 1970")
       note.note.should eql("reprimanded!")
     end
 
@@ -132,8 +131,7 @@ describe ConversationMessage do
       student = student_in_course.user
       student.associated_accounts << Account.default
       conversation = @teacher.initiate_conversation([student.id])
-      message = conversation.add_message("reprimanded!")
-      message.generate_user_note.should be_nil
+      conversation.add_message("reprimanded!", :generate_user_note => true)
       student.user_notes.size.should be(0)
     end
 
@@ -146,8 +144,7 @@ describe ConversationMessage do
       student2 = student_in_course.user
       student2.associated_accounts << Account.default
       conversation = @teacher.initiate_conversation([student1.id, student2.id])
-      message = conversation.add_message("message")
-      message.generate_user_note.should be_nil
+      conversation.add_message("reprimanded!", :generate_user_note => true)
       student1.user_notes.size.should be(0)
       student2.user_notes.size.should be(0)
     end
@@ -165,6 +162,20 @@ describe ConversationMessage do
       StreamItem.count.should eql(old_count + 1)
       stream_item = StreamItem.last
       stream_item.item_asset_string.should eql(message.conversation.asset_string)
+    end
+
+    it "should not create a conversation stream item for a submission comment" do
+      old_count = StreamItem.count
+
+      course_with_teacher
+      student_in_course.user
+      assignment_model(:course => @course)
+      @assignment.workflow_state = 'published'
+      @assignment.save
+      @submission = @assignment.submit_homework(@user, :body => 'some message')
+      @submission.add_comment(:author => @user, :comment => "hello")
+
+      StreamItem.all.select{ |i| i.asset_string =~ /conversation_/ }.should be_empty
     end
 
     it "should not create additional stream_items for additional messages in the same conversation" do
@@ -192,11 +203,81 @@ describe ConversationMessage do
       message = conversation.add_message("second message")
 
       stream_item = StreamItem.last
-      
+
       message.destroy
       StreamItem.count.should eql(old_count + 1)
     end
 
     it "should delete the stream_item if the conversation is deleted" # not yet implemented
+  end
+
+  context "infer_defaults" do
+    before do
+      course_with_teacher(:active_all => true)
+      student_in_course(:active_all => true)
+    end
+
+    it "should set has_attachments if there are attachments" do
+      a = attachment_model(:context => @teacher, :folder => @teacher.conversation_attachments_folder)
+      m = @teacher.initiate_conversation([@student.id]).add_message("ohai", :attachment_ids => [a.id])
+      m.read_attribute(:has_attachments).should be_true
+      m.conversation.reload.has_attachments.should be_true
+      m.conversation.conversation_participants.all?(&:has_attachments?).should be_true
+    end
+
+    it "should set has_attachments if there are forwareded attachments" do
+      a = attachment_model(:context => @teacher, :folder => @teacher.conversation_attachments_folder)
+      m1 = @teacher.initiate_conversation([user.id]).add_message("ohai", :attachment_ids => [a.id])
+      m2 = @teacher.initiate_conversation([@student.id]).add_message("lulz", :forwarded_message_ids => [m1.id])
+      m2.read_attribute(:has_attachments).should be_true
+      m2.conversation.reload.has_attachments.should be_true
+      m2.conversation.conversation_participants.all?(&:has_attachments?).should be_true
+    end
+
+    it "should set has_media_objects if there is a media comment" do
+      mc = MediaObject.new
+      mc.media_type = 'audio'
+      mc.media_id = 'asdf'
+      mc.context = mc.user = @teacher
+      mc.save
+      m = @teacher.initiate_conversation([@student.id]).add_message("ohai", :media_comment => mc)
+      m.read_attribute(:has_media_objects).should be_true
+      m.conversation.reload.has_media_objects.should be_true
+      m.conversation.conversation_participants.all?(&:has_media_objects?).should be_true
+    end
+
+    it "should set has_media_objects if there are forwarded media comments" do
+      mc = MediaObject.new
+      mc.media_type = 'audio'
+      mc.media_id = 'asdf'
+      mc.context = mc.user = @teacher
+      mc.save
+      m1 = @teacher.initiate_conversation([user.id]).add_message("ohai", :media_comment => mc)
+      m2 = @teacher.initiate_conversation([@student.id]).add_message("lulz", :forwarded_message_ids => [m1.id])
+      m2.read_attribute(:has_media_objects).should be_true
+      m2.conversation.reload.has_media_objects.should be_true
+      m2.conversation.conversation_participants.all?(&:has_media_objects?).should be_true
+    end
+  end
+
+  describe "reply_from" do
+    it "should ignore replies on deleted accounts" do
+      course_with_teacher
+      student_in_course
+      conversation = @teacher.initiate_conversation([@user.id])
+      cm = conversation.add_message("initial message", :root_account_id => Account.default.id)
+
+      Account.default.destroy
+      cm.reload
+
+      cm2 = cm.reply_from({
+        :purpose => 'general',
+        :user => @teacher,
+        :subject => "an email reply",
+        :html => "body",
+        :text => "body"
+      })
+      cm2.should be_nil
+    end
   end
 end

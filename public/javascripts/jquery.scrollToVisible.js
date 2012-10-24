@@ -18,6 +18,12 @@
 
 // Scrolls the supplied object until its visible. Call from
 // ("html,body") to scroll the window.
+
+define([
+  'jquery' /* $ */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */
+], function($) {
+
 $.fn.scrollToVisible = function(obj) {
   var options = {};
   var $obj = $(obj);
@@ -72,3 +78,4 @@ $.fn.scrollToVisible = function(obj) {
   return this;
 };
 
+});

@@ -77,11 +77,20 @@ module CC::Importer
         if ext[:platform] == CANVAS_PLATFORM
           tool[:privacy_level] = ext[:custom_fields].delete 'privacy_level'
           tool[:domain] = ext[:custom_fields].delete 'domain'
-          
+          tool[:consumer_key] = ext[:custom_fields].delete 'consumer_key'
+          tool[:shared_secret] = ext[:custom_fields].delete 'shared_secret'
+          tool[:tool_id] = ext[:custom_fields].delete 'tool_id'
+          if tool[:assignment_points_possible] = ext[:custom_fields].delete('outcome')
+            tool[:assignment_points_possible] = tool[:assignment_points_possible].to_f
+          end
           tool[:settings] = ext[:custom_fields]
         else
           tool[:extensions] << ext
         end
+      end
+      if icon = get_node_val(doc, "#{blti}|icon")
+        tool[:settings] ||= {}
+        tool[:settings][:icon_url] = icon
       end
       tool
     end
@@ -97,7 +106,15 @@ module CC::Importer
     
     def retrieve_and_convert_blti_url(url)
       begin
-        config_xml = Net::HTTP.get(URI.parse(url))
+        uri = URI.parse(url)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = uri.scheme == 'https'
+        http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+        
+        request = Net::HTTP::Get.new(uri.request_uri)
+        response = http.request(request)
+        config_xml = response.body
+
         convert_blti_xml(config_xml)
       rescue Timeout::Error
         raise CCImportError.new(I18n.t(:retrieve_timeout, "could not retrieve configuration, the server response timed out"))
@@ -124,6 +141,25 @@ module CC::Importer
         end
       end
       "blti"
+    end
+
+    def create_assignments_from_lti_links(lti_tools)
+      asmnts = []
+
+      lti_tools.each do |tool|
+        if tool[:assignment_points_possible]
+          asmnt = {:migration_id => tool[:migration_id]}
+          asmnt[:title] = tool[:title]
+          asmnt[:description] = tool[:description]
+          asmnt[:submission_format] = "external_tool"
+          asmnt[:external_tool_url] = tool[:url]
+          asmnt[:grading_type] = 'points'
+          asmnt[:points_possible] = tool[:assignment_points_possible]
+          asmnts << asmnt
+        end
+      end
+
+      asmnts
     end
     class CCImportError < Exception; end
   end

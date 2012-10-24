@@ -52,6 +52,7 @@
   }
 </style>
 
+<h2><%= @context.class.to_s %> <%= t('titles.permissions', 'Permissions') %></h2>
 <div style="margin:1em;">
   <div class="ui-widget ui-widget-content ui-corner-all" style="margin-bottom:1em; padding: 1em">
     <h3><%= t 'titles.explanation', "Explanation:" %></h3>
@@ -69,7 +70,7 @@
       <% if @managing_account_roles %>
         <a href="<%= context_url(@context, :context_permissions_url) %>"><%= t 'links.manage_course_roles', "Manage Course-Level Roles" %></a>
       <% else %>
-        <a href="<%= context_url(@context, :context_permissions_url, :account_roles => 1) %>"><%= t 'links.manage_accoiunt_roles', "Manage Account-Level Roles" %></a>
+        <a id="course_level_roles" href="<%= context_url(@context, :context_permissions_url, :account_roles => 1) %>"><%= t 'links.manage_accoiunt_roles', "Manage Account-Level Roles" %></a>
       <% end %>
     <% end %>
   </div>
@@ -92,11 +93,11 @@
       <% end %>
       <tr>
         <td colspan="2" style="padding: 2px 3px;">
-          <% form_tag(context_url(@context, :add_role_context_permissions_url)) do %>
+          <%form_tag(context_url(@context, :add_role_context_permissions_url)) do %>
             <input type="hidden" name="account_roles" value="1"/>
             <%= before_label :new_role_type, "New Role Type" %>
-            <input type="text" name="role_type"/>
-            <button class="button" type="submit"><%= image_tag "add.png" %> <%= t '#buttons.add', "Add" %></button>
+            <input class= "add_new_role" type="text" name="role_type"/>
+            <button  id="add_new_role_button" class="button" type="submit"><%= image_tag "add.png" %> <%= t '#buttons.add', "Add" %></button>
           <% end %>
         </td>
       </tr>
@@ -115,31 +116,34 @@
         </tr>
       </thead>
       <tbody>
-        <% permissions = RoleOverride.permissions.select{|k, p| @managing_account_roles || !p[:account_only] }.to_a.sort { |a, b| a.last[:label].call() <=> b.last[:label].call() } %>
-        <% if @managing_account_roles && @context == Account.site_admin -%>
-        <tr class='ui-widget-header'>
-          <td><%= t 'headers.site_admin_permissions', "Site Admin Permissions" %></td>
-          <td colspan='<%= @role_types.size %>'></td>
-        </tr>
-        <%= render :partial => 'permission', :collection => permissions.select { |k, p| p[:account_only] == :site_admin } %>
+        <% permissions = RoleOverride.manageable_permissions(@context) %>
+        <% permissions.reject! { |k, p| (p[:available_to] & RoleOverride.enrollment_types.map { |role| role[:name] }).empty? unless @managing_account_roles } %>
+        <% permissions.to_a.sort { |a, b| a.last[:label].call() <=> b.last[:label].call() } %>
+        <% site_admin_permissions, permissions = permissions.partition { |(k, p)| p[:account_only] == :site_admin } %>
+        <% account_permissions, permissions = permissions.partition { |(k, p)| p[:account_only] } %>
+        <% unless site_admin_permissions.empty? -%>
+          <tr class='ui-widget-header'>
+            <td><%= t 'headers.site_admin_permissions', "Site Admin Permissions" %></td>
+            <td colspan='<%= @role_types.size %>'></td>
+          </tr>
+          <%= render :partial => 'permission', :collection => site_admin_permissions %>
         <% end -%>
-        <% if @managing_account_roles -%>
-        <tr class='ui-widget-header'>
-          <td><%= t 'headers.account_permissions', "Account Permissions" %></td>
-          <td colspan='<%= @role_types.size %>'></td>
-        </tr>
-        <%= render :partial => 'permission', :collection => permissions.select { |k, p| p[:account_only] == true || p[:account_only] == :root && @context.root_account? } %>
+        <% unless account_permissions.empty? -%>
+          <tr class='ui-widget-header'>
+            <td><%= t 'headers.account_permissions', "Account Permissions" %></td>
+            <td colspan='<%= @role_types.size %>'></td>
+          </tr>
+          <%= render :partial => 'permission', :collection => account_permissions %>
+        <% end -%>
         <tr class='ui-widget-header'>
           <td><%=  t 'headers.course_permissions',  "Course & Account Permissions" %></td>
           <td colspan='<%= @role_types.size %>'></td>
         </tr>
-        <% end -%>
-
-        <%= render :partial => 'permission', :collection => permissions.select { |k, p| !p[:account_only] } %>
+        <%= render :partial => 'permission', :collection => permissions %>
       </tbody>
     </table>
     <div class="button-container">
-      <button type="submit" class="button"><%= t 'buttons.save', "Save Changes" %></button>
+      <button type="submit" class="save_permissions_changes button"><%= t 'buttons.save', "Save Changes" %></button>
       <a class="cancel_button button-secondary" href="<%= url_for(:back) %>"><%= t '#buttons.cancel', "Cancel" %></a>
     </div>
   <% end -%>
@@ -147,7 +151,11 @@
 
 <% js_block do %>
 <script type="text/javascript">
-(function(){
+require([
+  'jquery' /* $ */,
+  'jquery.instructure_misc_plugins' /* /\.log\(/ */
+], function($) {
+
   $('.six-checkbox').click(function(){
     var $this = $(this);
     if (!$this.hasClass('six-checkbox-disabled-checked') && !$this.hasClass('six-checkbox-disabled-unchecked') ) { //if its not disabled
@@ -210,7 +218,7 @@
     //       .val(this);
     //   }
     // });
-  })  
-})();
+  });
+});
 </script>
 <% end %>

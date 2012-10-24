@@ -19,8 +19,8 @@
 class ContextModulesController < ApplicationController
   before_filter :require_context  
   add_crumb(proc { t('#crumbs.modules', "Modules") }) { |c| c.send :named_context_url, c.instance_variable_get("@context"), :context_context_modules_url }
-  before_filter { |c| c.active_tab = "modules" }  
-  
+  before_filter { |c| c.active_tab = "modules" }
+
   def index
     if authorized_action(@context, @current_user, :read)
       @modules = @context.context_modules.active
@@ -37,18 +37,8 @@ class ContextModulesController < ApplicationController
   def item_redirect
     if authorized_action(@context, @current_user, :read)
       @tag = @context.context_module_tags.active.include_progressions.find(params[:id])
-      
-      # if the object is locked for this user, reevaluate all the modules and clear the cache so it will be checked again when loaded
-      if @tag.content && @tag.content.respond_to?(:locked_for?)
-        locked = @tag.content.is_a?(WikiPage) ? @tag.content.locked_for?(@context, @current_user) : @tag.content.locked_for?(@current_user) 
-        if locked
-          @context.context_modules.each { |m| m.evaluate_for(@current_user, true, true) }
-          if @tag.content.respond_to?(:clear_locked_cache)
-            @tag.content.clear_locked_cache(@current_user)
-          end
-        end
-      end
-      
+
+      reevaluate_modules_if_locked(@tag)
       @progression = @tag.context_module.evaluate_for(@current_user) if @tag.context_module
       @progression.uncollapse! if @progression && @progression.collapsed != false
       content_tag_redirect(@context, @tag, :context_context_modules_url)
@@ -70,9 +60,24 @@ class ContextModulesController < ApplicationController
         redirect_to named_context_url(@context, :context_context_modules_url, :anchor => "module_#{@module.id}")
         return
       end
+
+      reevaluate_modules_if_locked(@tag)
       @progression = @tag.context_module.evaluate_for(@current_user) if @tag && @tag.context_module
       @progression.uncollapse! if @progression && @progression.collapsed != false
       content_tag_redirect(@context, @tag, :context_context_modules_url)
+    end
+  end
+
+  def reevaluate_modules_if_locked(tag)
+    # if the object is locked for this user, reevaluate all the modules and clear the cache so it will be checked again when loaded
+    if tag.content && tag.content.respond_to?(:locked_for?)
+      locked = tag.content.is_a?(WikiPage) ? tag.content.locked_for?(@context, @current_user) : tag.content.locked_for?(@current_user) 
+      if locked
+        @context.context_modules.each { |m| m.evaluate_for(@current_user, true, true) }
+        if tag.content.respond_to?(:clear_locked_cache)
+          tag.content.clear_locked_cache(@current_user)
+        end
+      end
     end
   end
   
@@ -161,7 +166,11 @@ class ContextModulesController < ApplicationController
     code = params[:code].split("_")
     id = code.pop
     type = code.join("_").classify
-    @tag = @context.context_module_tags.active.find_by_context_module_id_and_content_id_and_content_type(params[:context_module_id], id, type)
+    if type == 'ContentTag'
+      @tag = @context.context_module_tags.active.find_by_id(id)
+    else
+      @tag = @context.context_module_tags.active.find_by_context_module_id_and_content_id_and_content_type(params[:context_module_id], id, type)
+    end
     @module = @context.context_modules.active.find(params[:context_module_id])
     @progression = @module.evaluate_for(@current_user)
     @progression.current_position ||= 0 if @progression
@@ -239,14 +248,19 @@ class ContextModulesController < ApplicationController
       order = params[:order].split(",")
       tags = @context.context_module_tags.active.find_all_by_id(order).compact
       affected_module_ids = tags.map(&:context_module_id).uniq.compact
+      affected_items = []
       items = order.map{|id| tags.detect{|t| t.id == id.to_i } }.compact.uniq
-      items.each_index do |idx|
-        item = items[idx]
+      items.each_with_index do |item, idx|
         item.position = idx
         item.context_module_id = @module.id
-        item.save
+        if item.changed?
+          item.skip_touch = true
+          item.save
+          affected_items << item
+        end
       end
-      ContextModule.update_all({:updated_at => Time.now.utc}, {:id => affected_module_ids})
+      ContentTag.touch_context_modules(affected_module_ids)
+      ContentTag.update_could_be_locked(affected_items)
       @context.touch
       @module.reload
       respond_to do |format|
@@ -264,16 +278,25 @@ class ContextModulesController < ApplicationController
       @modules = @context.context_modules.active
       @tags = @context.context_module_tags.active.sort_by{|t| t.position ||= 999}
       result = {}
-      result[:current_item] = @tags.detect{|t| t.content_type == type && t.content_id == id }
-      if !result[:current_item]
-        obj = @context.find_asset(params[:id], [:attachment, :discussion_topic, :assignment, :quiz, :wiki_page, :content_tag])
-        
-        if obj.is_a?(ContentTag)
-          result[:current_item] = @tags.detect{|t| t.id == obj.id }
-        elsif obj.is_a?(DiscussionTopic) && obj.assignment_id
-          result[:current_item] = @tags.detect{|t| t.content_type == 'Assignment' && t.content_id == obj.assignment_id }
-        elsif obj.is_a?(Quiz) && obj.assignment_id
-          result[:current_item] = @tags.detect{|t| t.content_type == 'Assignment' && t.content_id == obj.assignment_id }
+      possible_tags = @tags.find_all {|t| t.content_type == type && t.content_id == id }
+      if possible_tags.size > 1
+        # if there's more than one tag for the item, but the caller didn't
+        # specify which one they want, we don't want to return any information.
+        # this way the module item prev/next links won't appear with misleading navigation info.
+        if params[:module_item_id]
+          result[:current_item] = possible_tags.detect { |t| t.id == params[:module_item_id].to_i }
+        end
+      else
+        result[:current_item] = possible_tags.first
+        if !result[:current_item]
+          obj = @context.find_asset(params[:id], [:attachment, :discussion_topic, :assignment, :quiz, :wiki_page, :content_tag])
+          if obj.is_a?(ContentTag)
+            result[:current_item] = @tags.detect{|t| t.id == obj.id }
+          elsif obj.is_a?(DiscussionTopic) && obj.assignment_id
+            result[:current_item] = @tags.detect{|t| t.content_type == 'Assignment' && t.content_id == obj.assignment_id }
+          elsif obj.is_a?(Quiz) && obj.assignment_id
+            result[:current_item] = @tags.detect{|t| t.content_type == 'Assignment' && t.content_id == obj.assignment_id }
+          end
         end
       end
       result[:current_item].evaluate_for(@current_user) rescue nil

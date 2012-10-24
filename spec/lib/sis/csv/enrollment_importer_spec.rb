@@ -281,4 +281,172 @@ describe SIS::CSV::EnrollmentImporter do
     )
   end
 
+  it "should resurrect deleted enrollments" do
+    process_csv_data_cleanly(
+      "course_id,short_name,long_name,account_id,term_id,status",
+      "test_1,TC 101,Test Course 101,,,active"
+    )
+    process_csv_data_cleanly(
+      "user_id,login_id,first_name,last_name,email,status",
+      "user_1,user1,User,Uno,user@example.com,active"
+    )
+    process_csv_data_cleanly(
+      "course_id,user_id,role,section_id,status,associated_user_id",
+      "test_1,user_1,student,,deleted,"
+    )
+    @course = Course.find_by_sis_source_id('test_1')
+    scope = Enrollment.scoped(:conditions => { :course_id => @course.id })
+    scope.count.should == 1
+    @enrollment = scope.first
+    @enrollment.should be_deleted
+
+    process_csv_data_cleanly(
+      "course_id,user_id,role,section_id,status,associated_user_id",
+      "test_1,user_1,student,,active,"
+    )
+    scope.count.should == 1
+    @enrollment.reload.should be_active
+  end
+
+  it "should allow one user multiple enrollment types in the same section" do
+    process_csv_data_cleanly(
+      "course_id,short_name,long_name,account_id,term_id,status",
+      "test_1,TC 101,Test Course 101,,,active"
+    )
+    process_csv_data_cleanly(
+      "user_id,login_id,first_name,last_name,email,status",
+      "user_1,user1,User,Uno,user@example.com,active"
+    )
+    process_csv_data_cleanly(
+      "course_id,user_id,role,section_id,status,associated_user_id",
+      "test_1,user_1,student,,active,",
+      "test_1,user_1,teacher,,active,"
+    )
+    @course = Course.find_by_sis_source_id('test_1')
+    @course.enrollments.count.should == 2
+    @user = Pseudonym.find_by_sis_user_id('user_1').user
+    @course.enrollments.map(&:user).should == [@user, @user]
+  end
+
+  it "should allow one user to observe multiple students" do
+    process_csv_data_cleanly(
+      "course_id,short_name,long_name,account_id,term_id,status",
+      "test_1,TC 101,Test Course 101,,,active"
+    )
+    process_csv_data_cleanly(
+      "user_id,login_id,first_name,last_name,email,status",
+      "user_1,user1,User,Uno,user@example.com,active",
+      "user_2,user2,User,Uno,user@example.com,active",
+      "observer_1,user3,User,Uno,user@example.com,active"
+    )
+    process_csv_data_cleanly(
+      "course_id,user_id,role,section_id,status,associated_user_id",
+      "test_1,user_1,student,,active,",
+      "test_1,user_2,student,,active,",
+      "test_1,observer_1,observer,,active,user_1",
+      "test_1,observer_1,observer,,active,user_2"
+    )
+    @course = Course.find_by_sis_source_id('test_1')
+    @course.enrollments.count.should == 4
+    @observer = Pseudonym.find_by_sis_user_id('observer_1').user
+    @user1 = Pseudonym.find_by_sis_user_id('user_1').user
+    @user2 = Pseudonym.find_by_sis_user_id('user_2').user
+    @course.observer_enrollments.map(&:user).should == [@observer, @observer]
+    @course.observer_enrollments.map(&:associated_user_id).sort.should == [@user1.id, @user2.id].sort
+  end
+
+  it "should find manually xlisted sections when enrolling by course id" do
+    process_csv_data_cleanly(
+      "course_id,short_name,long_name,account_id,term_id,status",
+      "test_1,TC 101,Test Course 101,,,active",
+      "test_2,TC 102,Test Course 102,,,active"
+    )
+    process_csv_data_cleanly(
+      "user_id,login_id,first_name,last_name,email,status",
+      "user_1,user1,User,Uno,user@example.com,active",
+      "user_2,user2,User,Uno,user@example.com,active",
+      "user_3,user3,User,Uno,user@example.com,active"
+    )
+    process_csv_data_cleanly(
+      "course_id,user_id,role,section_id,status,associated_user_id",
+      "test_1,user_1,student,,active,",
+      "test_2,user_1,student,,active,"
+    )
+    @course1 = Course.find_by_sis_source_id('test_1')
+    @course2 = Course.find_by_sis_source_id('test_2')
+    @course1.default_section.crosslist_to_course(@course2)
+    @course2.course_sections.count.should == 2
+
+    process_csv_data_cleanly(
+      "course_id,user_id,role,section_id,status,associated_user_id",
+      "test_1,user_3,student,,active,"
+    )
+    @course2.enrollments.count.should == 3
+    @course1.enrollments.count.should == 0
+  end
+
+  it "should not recycle an observer's associated user id in subsequent student enrollments" do
+    process_csv_data_cleanly(
+        "course_id,short_name,long_name,account_id,term_id,status",
+        "test_1,TC 101,Test Course 101,,,active"
+    )
+    process_csv_data_cleanly(
+        "user_id,login_id,first_name,last_name,email,status",
+        "user_1,user1,User,Uno,user1@example.com,active",
+        "user_2,user2,User,Dos,user2@example.com,active",
+        "observer_1,observer1,Observer,Uno,observer1@example.com,active"
+    )
+    process_csv_data_cleanly(
+        "course_id,user_id,role,section_id,status,associated_user_id",
+        "test_1,user_1,student,,active,",
+        "test_1,observer_1,observer,,active,user_1",
+        "test_1,user_2,student,,active,"
+    )
+    @course = Course.find_by_sis_source_id('test_1')
+    @course.enrollments.count.should == 3
+    @observer = Pseudonym.find_by_sis_user_id('observer_1').user
+    @user1 = Pseudonym.find_by_sis_user_id('user_1').user
+    @user2 = Pseudonym.find_by_sis_user_id('user_2').user
+
+    @observer.enrollments.size.should == 1
+    observer_enrollment = @observer.enrollments.first
+    observer_enrollment.type.should == "ObserverEnrollment"
+    observer_enrollment.associated_user_id.should == @user1.id
+
+    @user2.enrollments.size.should == 1
+    user2_enrollment = @user2.enrollments.first
+    user2_enrollment.type.should == "StudentEnrollment"
+    user2_enrollment.associated_user_id.should be_nil
+  end
+
+  it "should find observed user who is deleted and clear observer correctly" do
+    process_csv_data_cleanly(
+        "course_id,short_name,long_name,account_id,term_id,status",
+        "test_1,TC 101,Test Course 101,,,active"
+    )
+    process_csv_data_cleanly(
+        "user_id,login_id,first_name,last_name,email,status",
+        "user_1,user1,User,Uno,user1@example.com,active",
+        "observer_1,observer1,Observer,Uno,observer1@example.com,active"
+    )
+    process_csv_data_cleanly(
+        "course_id,user_id,role,section_id,status,associated_user_id",
+        "test_1,user_1,student,,active,",
+        "test_1,observer_1,observer,,active,user_1"
+    )
+
+    @observer = Pseudonym.find_by_sis_user_id('observer_1').user
+    @observer.enrollments.count.should == 1
+
+    process_csv_data_cleanly(
+        "course_id,user_id,role,section_id,status,associated_user_id",
+        "test_1,user_1,student,,completed,",
+        "test_1,observer_1,observer,,completed,user_1"
+    )
+
+    @observer.reload
+    @observer.enrollments.count.should == 1
+    @observer.enrollments.first.workflow_state.should == 'completed'
+  end
+
 end

@@ -16,14 +16,20 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-I18n.scoped('user_name', function(I18n) {
+define([
+  'i18n!user_name',
+  'jquery' /* $ */,
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.instructure_forms' /* formSubmit */,
+  'jqueryui/dialog',
+  'jquery.templateData' /* fillTemplateData */
+], function(I18n, $) {
 $(document).ready(function() {
   $("#name_and_email").delegate('.edit_user_link', 'click', function(event) {
     event.preventDefault();
-    $("#edit_student_dialog").dialog('close').dialog({
-      autoOpen: false,
+    $("#edit_student_dialog").dialog({
       width: 450
-    }).dialog('open');
+    });
     $("#edit_student_form :text:visible:first").focus().select();
   });
   $("#edit_student_form").formSubmit({
@@ -34,7 +40,7 @@ $(document).ready(function() {
     success: function(data) {
       $(this).find("button").attr('disabled', false)
         .filter(".submit_button").text(I18n.t('buttons.update_user', "Update User"));
-      $("#name_and_email .user_details").fillTemplateData({data: data && data.user});
+      $("#name_and_email .user_details").fillTemplateData({data: data });
       $("#edit_student_dialog").dialog('close');
     },
     error: function(data) {

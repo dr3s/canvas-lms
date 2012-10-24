@@ -18,9 +18,11 @@
 
 module Api::V1::StreamItem
   include Api::V1::Context
+  include Api::V1::Collection
+  include Api::V1::Submission
 
-  def stream_item_json(stream_item, viewing_user_id)
-    data = stream_item.stream_data(viewing_user_id)
+  def stream_item_json(stream_item, current_user, session)
+    data = stream_item.stream_data(current_user.id)
     {}.tap do |hash|
 
       # generic attributes common to all stream item types
@@ -31,14 +33,25 @@ module Api::V1::StreamItem
       hash['message'] = data.body
       hash['type'] = data.type
       hash.merge!(context_data(data))
+      if stream_item.context_code
+        context_type, context_id = ::StreamItem.asset_string_components(stream_item.context_code)
+      end
 
       case data.type
       when 'DiscussionTopic', 'Announcement'
         hash['message'] = data.message
         if data.type == 'DiscussionTopic'
-          hash['discussion_topic_id'] = data.id
+          if context_type == "collection_item"
+            # TODO: build the html_url for the collection item (we want to send them
+            # there instead of directly to the discussion.)
+            # These html routes aren't enabled yet, so we can't build them here yet.
+          else
+            hash['discussion_topic_id'] = data.id
+            hash['html_url'] = send("#{context_type}_discussion_topic_url", context_id, data.id.to_i)
+          end
         else
           hash['announcement_id'] = data.id
+          hash['html_url'] = send("#{context_type}_announcement_url", context_id, data.id.to_i)
         end
         hash['total_root_discussion_entries'] = data.total_root_discussion_entries
         hash['require_initial_post'] = data.require_initial_post
@@ -59,40 +72,54 @@ module Api::V1::StreamItem
         hash['conversation_id'] = data.id
         hash['private'] = data.private
         hash['participant_count'] = data.participant_count
+        hash['html_url'] = conversation_url(data.id.to_i)
       when 'Message'
         hash['message_id'] = data.id
         # this type encompasses a huge number of different types of messages,
         # anything that gets send to communication channels
         hash['title'] = data.subject
         hash['notification_category'] = data.notification_category
-        hash['url'] = data.url
+        hash['html_url'] = hash['url'] = data.url
       when 'Submission'
-        hash['title'] = data.assignment.try(:title)
-        hash['grade'] = data.grade
-        hash['score'] = data.score
-        hash['submission_comments'] = data.submission_comments.map do |comment|
-          {
-            'body' => comment.formatted_body,
-            'user_name' => comment.user_short_name,
-            'user_id' => comment.author_id,
-          }
-        end unless data.submission_comments.blank?
-        hash['assignment'] = {
-          'title' => hash['title'],
-          'id' => data.assignment.try(:id),
-          'points_possible' => data.assignment.try(:points_possible),
-        }
+        json = submission_json(Submission.find(data.id), Assignment.find(data.assignment.id), current_user, session, nil, ['submission_comments', 'assignment', 'course', 'html_url', 'user'])
+        json.delete('id')
+        hash.merge! json
+
+        # backwards compat from before using submission_json
+        hash['assignment']['title'] = hash['assignment']['name']
+        hash['title'] = hash['assignment']['name']
+        hash['submission_comments'].each {|c| c['body'] = c['comment']}
       when /Conference/
         hash['web_conference_id'] = data.id
         hash['type'] = 'WebConference'
         hash['message'] = data.description
+        hash['html_url'] = send("#{context_type}_conference_url", context_id, data.id.to_i) if context_type
       when /Collaboration/
         hash['collaboration_id'] = data.id
         # TODO: this type isn't even shown on the web activity stream yet
         hash['type'] = 'Collaboration'
+        hash['html_url'] = send("#{context_type}_collaboration_url", context_id, data.id.to_i) if context_type
+      when "CollectionItem"
+        item = ::CollectionItem.find(data.id, :include => { :collection_item_data => :image_attachment })
+        hash['title'] = item.data.title
+        hash['message'] = item.data.description
+        hash['collection_item'] = collection_items_json([item], current_user, session).first
       else
         raise("Unexpected stream item type: #{data.type}")
       end
     end
+  end
+
+  def api_render_stream_for_contexts(contexts, paginate_url)
+    # for backwards compatibility, since this api used to be hard-coded to return 21 items
+    params[:per_page] ||= 21
+    opts = {}
+    opts[:contexts] = contexts if contexts.present?
+
+    items = @current_user.shard.activate do
+      scope = @current_user.visible_stream_item_instances(opts).scoped(:include => :stream_item)
+      Api.paginate(scope, self, self.send(paginate_url, @context)).to_a
+    end
+    render :json => items.map(&:stream_item).compact.map { |i| stream_item_json(i, @current_user, session) }
   end
 end

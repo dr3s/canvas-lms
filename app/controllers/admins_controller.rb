@@ -23,7 +23,8 @@ class AdminsController < ApplicationController
 
   include Api::V1::Admin
 
-  # @API
+  # @API Make an account admin
+  #
   # Flag an existing user as an admin within the account.
   #
   # @argument user_id The id of the user to promote.
@@ -31,10 +32,12 @@ class AdminsController < ApplicationController
   # @argument role [Optional] The user's admin relationship with the
   #   account will be created with the given role. Defaults to
   #   'AccountAdmin'.
+  #
+  # @argument send_confirmation [Optional] [0|1] Send a notification email to the new admin if set to '1'; send no email if set to '0'. Default is '1'.
   def create
     if authorized_action(@context, @current_user, :manage_account_memberships)
       user = api_find(User, params[:user_id])
-      admin = user.flag_as_admin(@context, params[:role])
+      admin = user.flag_as_admin(@context, params[:role], !(params[:send_confirmation] == '0'))
       render :json => admin_json(admin, @current_user, session)
     end
   end

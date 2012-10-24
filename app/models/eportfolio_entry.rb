@@ -49,7 +49,7 @@ class EportfolioEntry < ActiveRecord::Base
   protected :update_portfolio
   
   def content_sections
-    (self.content || []).map do |section|
+    (self.content.is_a?(String) && Array(self.content) || self.content || []).map do |section|
       if section.is_a?(Hash)
         section.with_indifferent_access
       else
@@ -144,6 +144,7 @@ class EportfolioEntry < ActiveRecord::Base
   def to_atom(opts={})
     Atom::Entry.new do |entry|
       entry.title     = "#{self.name}"
+      entry.authors  << Atom::Person.new(:name => t(:atom_author, "ePortfolio Entry"))
       entry.updated   = self.updated_at
       entry.published = self.created_at
       url = "http://#{HostUrl.default_host}/eportfolios/#{self.eportfolio_id}/#{self.eportfolio_category.slug}/#{self.slug}"

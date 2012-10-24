@@ -1,14 +1,13 @@
 class ContextExternalTool < ActiveRecord::Base
   include Workflow
   has_many :content_tags, :as => :content
-  has_many :assignments
   belongs_to :context, :polymorphic => true
   belongs_to :cloned_item
   attr_accessible :privacy_level, :domain, :url, :shared_secret, :consumer_key, 
                   :name, :description, :custom_fields, :custom_fields_string,
                   :course_navigation, :account_navigation, :user_navigation,
                   :resource_selection, :editor_button,
-                  :config_type, :config_url, :config_xml
+                  :config_type, :config_url, :config_xml, :tool_id
   validates_presence_of :name
   validates_presence_of :consumer_key
   validates_presence_of :shared_secret
@@ -17,25 +16,48 @@ class ContextExternalTool < ActiveRecord::Base
   attr_accessor :config_type, :config_url, :config_xml
   
   before_save :infer_defaults
+  after_save :touch_context
   validate :check_for_xml_error
 
   workflow do
     state :anonymous
     state :name_only
+    state :email_only
     state :public
     state :deleted
   end
-  
-  set_policy do 
+
+  def create_launch(context, user, return_url, selection_type=nil)
+    if selection_type
+      if self.settings[selection_type.to_sym]
+        resource_url = self.settings[selection_type.to_sym][:url]
+      else
+        raise t('no_selection_type', "This tool has no selection type %{type}", :type => selection_type)
+      end
+    end
+    resource_url ||= self.url
+    BasicLTI::ToolLaunch.new(:url => resource_url,
+                             :tool => self,
+                             :user => user,
+                             :context => context,
+                             :link_code => context.opaque_identifier(:asset_string),
+                             :return_url => return_url,
+                             :resource_type => selection_type)
+  end
+
+  set_policy do
     given { |user, session| self.cached_context_grants_right?(user, session, :update) }
     can :read and can :update and can :delete
   end
   
   def url_or_domain_is_set
+    setting_types = [:user_navigation, :course_navigation, :account_navigation, :resource_selection, :editor_button]
+    # both url and domain should not be set
     if url.present? && domain.present?
       errors.add(:url, t('url_or_domain_not_both', "Either the url or domain should be set, not both."))
       errors.add(:domain, t('url_or_domain_not_both', "Either the url or domain should be set, not both."))
-    elsif url.blank? && domain.blank?
+    # url or domain (or url on canvas lti extension) is required
+    elsif url.blank? && domain.blank? && setting_types.all?{|k| !settings[k] || settings[k]['url'].blank? }
       errors.add(:url, t('url_or_domain_required', "Either the url or domain should be set."))
       errors.add(:domain, t('url_or_domain_required', "Either the url or domain should be set."))
     end
@@ -47,9 +69,12 @@ class ContextExternalTool < ActiveRecord::Base
   
   def label_for(key, lang=nil)
     labels = settings[key] && settings[key][:labels]
-    (labels && labels[lang]) || 
+    labels2 = settings[:labels]
+    (labels && labels[lang]) ||
       (labels && lang && labels[lang.split('-').first]) || 
-      (settings[key] && settings[key][:text]) || 
+      (settings[key] && settings[key][:text]) ||
+      (labels2 && labels2[lang]) ||
+      (labels2 && lang && labels2[lang.split('-').first]) ||
       settings[:text] || name || "External Tool"
   end
   
@@ -70,7 +95,7 @@ class ContextExternalTool < ActiveRecord::Base
   end
   
   def privacy_level=(val)
-    if ['anonymous', 'name_only', 'public'].include?(val)
+    if ['anonymous', 'name_only', 'email_only', 'public'].include?(val)
       self.workflow_state = val
     end
   end
@@ -144,8 +169,12 @@ class ContextExternalTool < ActiveRecord::Base
       if hash[:visibility] == 'members' || hash[:visibility] == 'admins'
         nav_settings[:visibility] = hash[:visibility]
       end
-      nav_settings[:default] = !!hash[:default]
+      nav_settings[:default] = Canvas::Plugin.value_to_boolean(hash[:default])
     }
+  end
+
+  def course_navigation
+    settings[:course_navigation]
   end
 
   def account_navigation=(hash)
@@ -165,7 +194,7 @@ class ContextExternalTool < ActiveRecord::Base
   end
 
   def resource_selection=(hash)
-    tool_setting(:resource_selection, hash, :selection_width, :selection_height)
+    tool_setting(:resource_selection, hash, :selection_width, :selection_height, :icon_url)
   end
 
   def resource_selection
@@ -179,6 +208,22 @@ class ContextExternalTool < ActiveRecord::Base
   def editor_button
     settings[:editor_button]
   end
+
+  def icon_url=(i_url)
+    settings[:icon_url] = i_url
+  end
+
+  def icon_url
+    settings[:icon_url]
+  end
+
+  def text=(val)
+    settings[:text] = val
+  end
+
+  def text
+    settings[:text]
+  end
   
   def shared_secret=(val)
     write_attribute(:shared_secret, val) unless val.blank?
@@ -187,18 +232,24 @@ class ContextExternalTool < ActiveRecord::Base
   def infer_defaults
     self.url = nil if url.blank?
     self.domain = nil if domain.blank?
-    
-    settings.delete(:user_navigation) if settings[:user_navigation] && (!settings[:user_navigation][:url])
-    settings.delete(:course_navigation) if settings[:course_navigation] && (!settings[:course_navigation][:url])
-    settings.delete(:account_navigation) if settings[:account_navigation] && (!settings[:account_navigation][:url])
-    settings.delete(:resource_selection) if settings[:resource_selection] && (!settings[:resource_selection][:url] || !settings[:resource_selection][:selection_width] || !settings[:resource_selection][:selection_height])
-    settings.delete(:editor_button) if settings[:editor_button] && (!settings[:editor_button][:url] || !settings[:editor_button][:icon_url])
+
     [:resource_selection, :editor_button].each do |type|
       if settings[type]
-        settings[type][:selection_width] = settings[type][:selection_width].to_i
-        settings[type][:selection_height] = settings[type][:selection_height].to_i
+        settings[:icon_url] ||= settings[type][:icon_url] if settings[type][:icon_url]
+        settings[type][:selection_width] = settings[type][:selection_width].to_i if settings[type][:selection_width]
+        settings[type][:selection_height] = settings[type][:selection_height].to_i if settings[type][:selection_height]
       end
     end
+    [:course_navigation, :account_navigation, :user_navigation, :resource_selection, :editor_button].each do |type|
+      if settings[type]
+        if !(settings[type][:url] || self.url) || (settings[type].has_key?(:enabled) && !settings[type][:enabled])
+          settings.delete(type)
+        end
+      end
+    end
+
+    settings.delete(:resource_selection) if settings[:resource_selection] && (!settings[:resource_selection][:selection_width] || !settings[:resource_selection][:selection_height])
+    settings.delete(:editor_button) if settings[:editor_button] && !settings[:icon_url]
 
     self.has_user_navigation = !!settings[:user_navigation]
     self.has_course_navigation = !!settings[:course_navigation]
@@ -223,7 +274,7 @@ class ContextExternalTool < ActiveRecord::Base
   end
   
   def include_email?
-    public?
+    email_only? || public?
   end
   
   def include_name?
@@ -287,35 +338,37 @@ class ContextExternalTool < ActiveRecord::Base
   # as configured by an admin.  If there is still no match
   # then check for a match on the current context (configured by
   # the teacher).
-  def self.find_external_tool(url, context)
+  def self.find_external_tool(url, context, preferred_tool_id=nil)
     url = ContextExternalTool.standardize_url(url)
-    account_contexts = []
-    other_contexts = []
+    contexts = []
     while context
       if context.is_a?(Group)
-        other_contexts << context
+        contexts << context
         context = context.context || context.account
       elsif context.is_a?(Course)
-        other_contexts << context
+        contexts << context
         context = context.account
       elsif context.is_a?(Account)
-        account_contexts << context
+        contexts << context
         context = context.parent_account
       else
         context = nil
       end
     end
-    return nil if account_contexts.empty? && other_contexts.empty?
-    account_contexts.each do |context|
-      res = context.context_external_tools.active.sort_by(&:precedence).detect{|tool| tool.domain && tool.matches_url?(url) }
+
+    # Always use the preferred tool if it's valid and has a resource_selection configuration.
+    # If it didn't have resource_selection then a change in the URL would have been done manually,
+    # and there's no reason to assume a different URL was intended. With a resource_selection 
+    # insertion, there's a stronger chance that a different URL was intended.
+    preferred_tool = ContextExternalTool.active.find_by_id(preferred_tool_id)
+    return preferred_tool if preferred_tool && preferred_tool.settings[:resource_selection]
+    
+    contexts.each do |context|
+      res = context.context_external_tools.active.sort_by{|t| [t.precedence, t.id == preferred_tool_id ? 0 : 1] }.detect{|tool| tool.url && tool.matches_url?(url) }
       return res if res
     end
-    account_contexts.each do |context|
-      res = context.context_external_tools.active.sort_by(&:precedence).detect{|tool| tool.matches_url?(url) }
-      return res if res
-    end
-    other_contexts.reverse.each do |context|
-      res = context.context_external_tools.active.sort_by(&:precedence).detect{|tool| tool.matches_url?(url) }
+    contexts.each do |context|
+      res = context.context_external_tools.active.sort_by{|t| [t.precedence, t.id == preferred_tool_id ? 0 : 1] }.detect{|tool| tool.domain && tool.matches_url?(url) }
       return res if res
     end
     nil
@@ -353,27 +406,32 @@ class ContextExternalTool < ActiveRecord::Base
   
   def self.process_migration(data, migration)
     tools = data['external_tools'] ? data['external_tools']: []
-    to_import = migration.to_import 'external_tools'
     tools.each do |tool|
-      if tool['migration_id'] && (!to_import || to_import[tool['migration_id']])
+      if migration.import_object?("external_tools", tool['migration_id'])
         item = import_from_migration(tool, migration.context)
-        migration.add_warning(t('external_tool_attention_needed', 'The security parameters for the external tool "%{tool_name}" need to be set in Course Settings.', :tool_name => item.name))
+        if item.consumer_key == 'fake' || item.shared_secret == 'fake'
+          migration.add_warning(t('external_tool_attention_needed', 'The security parameters for the external tool "%{tool_name}" need to be set in Course Settings.', :tool_name => item.name))
+        end
       end
     end
   end
-  
+
+  # sets the custom fields from the main tool settings, and any on individual resource type settings
   def set_custom_fields(hash, resource_type)
-    fields = resource_type ? settings[resource_type.to_sym][:custom_fields] : settings[:custom_fields]
-    (fields || {}).each do |key, val|
-      key = key.gsub(/[^\w]/, '_').downcase
-      if key.match(/^custom_/)
-        hash[key] = val
-      else
-        hash["custom_#{key}"] = val
+    fields = [settings[:custom_fields] || {}]
+    fields << (settings[resource_type.to_sym][:custom_fields] || {}) if resource_type && settings[resource_type.to_sym]
+    fields.each do |field_set|
+      field_set.each do |key, val|
+        key = key.to_s.gsub(/[^\w]/, '_').downcase
+        if key.match(/^custom_/)
+          hash[key] = val
+        else
+          hash["custom_#{key}"] = val
+        end
       end
     end
   end
-  
+
   def clone_for(context, dup=nil, options={})
     if !self.cloned_item && !self.new_record?
       self.cloned_item = ClonedItem.create(:original_item => self)
@@ -406,11 +464,12 @@ class ContextExternalTool < ActiveRecord::Base
     item.migration_id = hash[:migration_id]
     item.name = hash[:title]
     item.description = hash[:description]
+    item.tool_id = hash[:tool_id]
     item.url = hash[:url] unless hash[:url].blank?
     item.domain = hash[:domain] unless hash[:domain].blank?
     item.privacy_level = hash[:privacy_level] || 'name_only'
-    item.consumer_key ||= 'fake'
-    item.shared_secret ||= 'fake'
+    item.consumer_key ||= hash[:consumer_key] || 'fake'
+    item.shared_secret ||= hash[:shared_secret] || 'fake'
     item.settings = hash[:settings].with_indifferent_access if hash[:settings].is_a?(Hash)
     if hash[:custom_fields].is_a? Hash
       item.settings[:custom_fields] ||= {}
@@ -430,7 +489,7 @@ class ContextExternalTool < ActiveRecord::Base
     end
     
     item.save!
-    context.imported_migration_items << item if context.imported_migration_items && item.new_record?
+    context.imported_migration_items << item if context.respond_to?(:imported_migration_items) && context.imported_migration_items && item.new_record?
     item
   end
 
@@ -444,9 +503,11 @@ class ContextExternalTool < ActiveRecord::Base
       settings[setting] = {}
     end
 
-    settings[setting][:url] = hash[:url]
+    settings[setting][:url] = hash[:url] if hash[:url]
     settings[setting][:text] = hash[:text] if hash[:text]
-    keys.each { |key| settings[setting][key] = hash[key] }
+    settings[setting][:custom_fields] = hash[:custom_fields] if hash[:custom_fields]
+    settings[setting][:enabled] = Canvas::Plugin.value_to_boolean(hash[:enabled]) if hash.has_key?(:enabled)
+    keys.each { |key| settings[setting][key] = hash[key] if hash.has_key?(key) }
 
     # if the type needs to do some validations for specific keys
     yield settings[setting] if block_given?

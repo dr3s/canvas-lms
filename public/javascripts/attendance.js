@@ -16,7 +16,23 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-I18n.scoped('attendance', function(I18n) {
+define([
+  'i18n!attendance',
+  'jquery' /* $ */,
+  'datagrid',
+  'str/htmlEscape',
+  'jquery.ajaxJSON' /* ajaxJSON */,
+  'jquery.dropdownList' /* dropdownList */,
+  'jquery.instructure_date_and_time' /* time_field, datetime_field */,
+  'jquery.instructure_forms' /* formSubmit, formErrors */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_helpers' /* replaceTags */,
+  'jquery.instructure_misc_plugins' /* fragmentChange */,
+  'jquery.keycodes' /* keycodes */,
+  'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
+  'jqueryui/position' /* /\.position\(/ */
+], function(I18n, $, datagrid, htmlEscape) {
+
   var attendance = {
     saveKeyIndex: 0,
     toggleState: function(cell, forceState, skipSave) {
@@ -123,10 +139,9 @@ I18n.scoped('attendance', function(I18n) {
       $("#new_assignment_dialog :text:not(.points_possible)").each(function() {
         $(this).val("");
       });
-      $("#new_assignment_dialog").dialog('close').dialog({
-        autoOpen: false,
+      $("#new_assignment_dialog").dialog({
         title: I18n.t('titles.new_attendance_column', "New Attendance Column")
-      }).dialog('open');
+      });
     });
     $("#new_assignment_dialog .cancel_button").click(function(event) {
       $("#new_assignment_dialog").dialog('close');
@@ -178,11 +193,10 @@ I18n.scoped('attendance', function(I18n) {
     $(".datetime_field").datetime_field();
     $(".help_link").click(function(event) {
       event.preventDefault();
-      $("#attendance_how_to_dialog").dialog('close').dialog({
-        autoOpen: false,
+      $("#attendance_how_to_dialog").dialog({
         width: 400,
         title: I18n.t('titles.attendance_help', "Attendance Help")
-      }).dialog('open');
+      });
     });
     $(".submission").addClass('loading');
     var getClump = function(url, assignment_ids, user_ids) {
@@ -250,16 +264,16 @@ I18n.scoped('attendance', function(I18n) {
     }).bind('entry_focus', function(event, grid) {
       if(grid.cell.row == 0) {
         var options = {};
-        options['<span class="ui-icon ui-icon-pencil">&nbsp;</span> ' + $.htmlEscape(I18n.t('options.edit_assignment', 'Edit Assignment'))] = function() {
+        options['<span class="ui-icon ui-icon-pencil">&nbsp;</span> ' + htmlEscape(I18n.t('options.edit_assignment', 'Edit Assignment'))] = function() {
           location.href = "/";
         };
-        options['<span class="ui-icon ui-icon-check">&nbsp;</span> ' + $.htmlEscape(I18n.t('options.mark_all_as_present', 'Mark Everyone Present'))] = function() {
+        options['<span class="ui-icon ui-icon-check">&nbsp;</span> ' + htmlEscape(I18n.t('options.mark_all_as_present', 'Mark Everyone Present'))] = function() {
           attendance.toggleColumnState(grid.cell.column, 'pass');
         };
-        options['<span class="ui-icon ui-icon-close">&nbsp;</span> ' + $.htmlEscape(I18n.t('options.mark_all_as_absent', 'Mark Everyone Absent'))] = function() {
+        options['<span class="ui-icon ui-icon-close">&nbsp;</span> ' + htmlEscape(I18n.t('options.mark_all_as_absent', 'Mark Everyone Absent'))] = function() {
           attendance.toggleColumnState(grid.cell.column, 'fail');
         };
-        options['<span class="ui-icon ui-icon-minus">&nbsp;</span> ' + $.htmlEscape(I18n.t('options.clear_attendance_marks', 'Clear Attendance Marks'))] = function() {
+        options['<span class="ui-icon ui-icon-minus">&nbsp;</span> ' + htmlEscape(I18n.t('options.clear_attendance_marks', 'Clear Attendance Marks'))] = function() {
           attendance.toggleColumnState(grid.cell.column, 'clear');
         }
         grid.cell.find(".options_dropdown").dropdownList({options: options});

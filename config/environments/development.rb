@@ -13,6 +13,9 @@ config.action_controller.consider_all_requests_local = true
 config.action_view.debug_rjs                         = true
 config.action_controller.perform_caching             = false
 
+# run rake js:build to build the optimized JS if set to true
+# ENV['USE_OPTIMIZED_JS']                            = 'true'
+
 # Really do care if the message wasn't sent.
 config.action_mailer.raise_delivery_errors = true
 
@@ -37,4 +40,9 @@ config.cache_store = Canvas.cache_store_config
 Dir[File.dirname(__FILE__) + "/" + File.basename(__FILE__, ".rb") + "-*.rb"].each { |localfile| eval(File.new(localfile).read) }
 
 # allow debugging only in development environment by default
-require "ruby-debug"
+# ruby-debug is currently broken in 1.9.3
+if RUBY_VERSION < "1.9."
+  require "ruby-debug"
+else
+  require "debugger"
+end

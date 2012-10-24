@@ -1,16 +1,14 @@
 <%
   @active_tab = 'settings'
-  jammit_js :graphael
   jammit_css :statistics
   add_crumb t('#crumbs.stats', "Statistics")
  %>
 
 <% content_for :page_title, join_title(t(:page_title, "Course Statistics"), @context.name) %>
-
 <div style="padding: 0 20px;" id="stats">
 <h2><%= t 'headings.stats', 'Statistics for %{course}', :course => @context.name %></h2>
 
-<% active_students = @context.participating_students.enrolled_before(@range_end).length %>
+<% active_students = @context.participating_students.scoped(:conditions => "enrollments.type != 'StudentViewEnrollment'").enrolled_before(@range_end).length %>
 <% inactive_students = @context.student_enrollments.before(@range_end).select{|e| e.invited? }.length %>
 
 <% total_topics = @context.discussion_topics.active.before(@range_end).count %>
@@ -26,11 +24,11 @@
   rubric_associations = @context.rubric_associations.bookmarked.before(@range_end)
   rubric_associations = rubric_associations.select(&:rubric_id).once_per(&:rubric_id)
 %>
-<div id="reports-tabs">
+<div id="reports-tabs" style="display:none;">
   <ul>
     <li><a href="#tab-totals"><%= t('tabs.totals', %{Totals}) %></a></li>
     <li><a href="#tab-assignments"><%= t('tabs.assignments', %{Assignments}) %></a></li>
-    <li><a href="#tab-students"><%= t('tabs.students', %{Students}) %></a></li>
+    <li><a href="#tab-students" id="students_stats_tab"><%= t('tabs.students', %{Students}) %></a></li>
     <li><a href="#tab-files"><%= t('tabs.files', %{File Storage}) %></a></li>
   </ul>
   <div class="stats" id="tab-totals">
@@ -124,17 +122,7 @@
   </div>
   <div id="tab-students">
     <h3><%= t('headings.students', %{Recently Logged-In Users}) %></h3>
-    <ul class="item_list">
-      <% @recently_logged_students.each do |user| %>
-        <li>
-          <a href="<%= user_path(user.id) %>" class="header"><%= user.name %></a>
-          <div class="sub_header"><%= t 'student_last_logged_in', "last logged in %{time}", :time => datetime_string(user.pseudonyms.map{|p| [p.current_login_at, p.last_login_at]}.flatten.compact.max) %></div>
-        </li>
-      <% end %>
-      <% if @recently_logged_students.empty? %>
-        <li><%= t('none_to_show', %{None to show}) %></li>
-      <% end %>
-    </ul>
+    <ul class="item_list"></ul>
   </div>
   <div class="stats" id="tab-files">
     <h3><%= t('headings.files', %{File Storage}) %></h3>
@@ -157,48 +145,4 @@
     </table>
   </div>
 </div>
-<% if page_views_enabled? -%>
-<h3 class='h-margin-top'><%= t('headings.page_views', %{Page views over time}) %></h3>
-<div id='page_views_by_day' style='width: 600px; height: 240px;'></div>
-
-<% js_block do %>
-  <!--Load the GOOGLE AJAX API-->
-  <script type="text/javascript" src="//www.google.com/jsapi"></script>
-
-  <script type="text/javascript">
-    var pageViewData = <%= raw @context.page_view_data(:dates => [1.month.ago, 1.second.ago]).to_json %>;
-    google.load('visualization', '1', {'packages':['annotatedtimeline']});
-    google.setOnLoadCallback(function(){
-      var data = new google.visualization.DataTable();
-      data.addColumn('date', 'Date');
-      data.addColumn('number', <%= raw t('page_views', %{'Page Views'}).to_json %>);
-      data.addColumn('string', 'title1');
-      data.addColumn('string', 'text1');
-      
-      var rows = []
-      $.each(pageViewData, function() {
-        var date = new Date();
-        date.setTime(this[0]);
-        rows.push(
-          //this ends up being [(a date), (the number of pageViews on that date), "an annotation tile, (if any)", ""]
-          [date, this[1], undefined, undefined]
-        )
-      });
-      
-      data.addRows(rows);
-
-      var chart = new google.visualization.AnnotatedTimeLine(document.getElementById('page_views_by_day'));
-      chart.draw(data, {displayAnnotations: false});
-      
-    });
-  </script>
-<% end -%>
-<% end -%>
-
-<% js_block do -%>
-  <script>
-  $(document).ready(function() {
-    $("#reports-tabs").tabs().show();
-  });
-  </script>
-<% end %>
+<% js_bundle :course_statistics %>

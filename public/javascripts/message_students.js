@@ -15,7 +15,15 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-I18n.scoped("message_students", function(I18n) {
+
+define([
+  'i18n!message_students',
+  'jquery' /* $ */,
+  'jquery.instructure_forms' /* formSubmit */,
+  'jqueryui/dialog',
+  'jquery.instructure_misc_plugins' /* showIf */
+], function(I18n, $) {
+
   var $message_students_dialog = $("#message_students_dialog");
   var currentSettings = {};
   window.messageStudents = function(settings) {
@@ -35,14 +43,16 @@ I18n.scoped("message_students", function(I18n) {
 
     $message_students_dialog.find("ul li:not(.blank)").remove();
 
-    for(var idx in settings.students) {
+    for (var i = 0; i < settings.students.length; i++) {
       var $student = $li.clone(true).removeClass('blank');
-      $student.find(".name").text(settings.students[idx].name);
-      $student.find(".score").text(settings.students[idx].score);
-      $student.data('id', settings.students[idx].id);
-      $student.user_data = settings.students[idx]
+
+      $student.find('.name').text(settings.students[i].name);
+      $student.find('.score').text(settings.students[i].score);
+      $student.data('id', settings.students[i].id);
+      $student.user_data = settings.students[i];
+
       $ul.append($student.show());
-      students_hash[settings.students[idx].id] = $student;
+      students_hash[settings.students[i].id] = $student;
     }
     
     $ul.show();
@@ -56,7 +66,7 @@ I18n.scoped("message_students", function(I18n) {
     $message_students_dialog.find("textarea").val("");
     $message_students_dialog.find("select")[0].selectedIndex = 0;
     $message_students_dialog.find("select").change();
-    $message_students_dialog.dialog('close').dialog({
+    $message_students_dialog.dialog({
       width: 600,
       modal: true
     }).dialog('open').dialog('option', 'title', I18n.t("message_student", "Message Students for %{course_name}", {course_name: title}));
@@ -126,4 +136,6 @@ I18n.scoped("message_students", function(I18n) {
       }
     });
   });
+
+  return messageStudents;
 });

@@ -21,9 +21,9 @@ require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
 describe GroupMembership do
   
   it "should ensure a mutually exclusive relationship" do
-    group = group_model
-    user = user_model
-    @gm = group_membership_model(:group_id => group.id, :user_id => user.id, :save => false)
+    group_model
+    user_model
+    @gm = group_membership_model(:save => false)
     @gm.expects(:ensure_mutually_exclusive_membership)
     @gm.save!
   end
@@ -58,102 +58,157 @@ describe GroupMembership do
   end
 
   context 'active_given_enrollments?' do
+    before do
+      @enrollment = course_with_student(:active_all => true)
+      @course_group = @course.groups.create!
+      @membership = @course_group.add_user(@student)
+    end
+
     it 'should be false if the membership is pending (requested)' do
-      course(:active_all => true)
-      group = @course.groups.create
-      student = user_model
-      enrollment = @course.enroll_student(student)
-      membership = group.add_user(student)
-      membership.workflow_state = 'requested'
-      membership.active_given_enrollments?([enrollment]).should be_false
+      @membership.workflow_state = 'requested'
+      @membership.active_given_enrollments?([@enrollment]).should be_false
     end
 
     it 'should be false if the membership is terminated (deleted)' do
-      course(:active_all => true)
-      group = @course.groups.create
-      student = user_model
-      enrollment = @course.enroll_student(student)
-      membership = group.add_user(student)
-      membership.workflow_state = 'deleted'
-      membership.active_given_enrollments?([enrollment]).should be_false
+      @membership.workflow_state = 'deleted'
+      @membership.active_given_enrollments?([@enrollment]).should be_false
     end
 
     it 'should be false given a course group without an enrollment in the list' do
-      course(:active_all => true)
-      group = @course.groups.create
-      student = user_model
-      enrollment = @course.enroll_student(student)
-      membership = group.add_user(student)
-      membership.active_given_enrollments?([]).should be_false
+      @membership.active_given_enrollments?([]).should be_false
     end
 
     it 'should be true for other course groups' do
-      course(:active_all => true)
-      group = @course.groups.create
-      student = user_model
-      enrollment = @course.enroll_student(student)
-      membership = group.add_user(student)
-      membership.active_given_enrollments?([enrollment]).should be_true
+      @membership.active_given_enrollments?([@enrollment]).should be_true
     end
 
     it 'should be true for account groups regardless of enrollments' do
-      account = Account.default
-      group = account.groups.create
-      student = user_model
-      membership = group.add_user(student)
-      membership.active_given_enrollments?([]).should be_true
+      @account_group = Account.default.groups.create!
+      @membership = @account_group.add_user(@student)
+      @membership.active_given_enrollments?([]).should be_true
+    end
+  end
+
+  it "should auto_join for backwards compatibility" do
+    user_model
+    group_model
+    group_membership_model(:workflow_state => "invited")
+    @group_membership.workflow_state.should == "accepted"
+  end
+
+  it "should not auto_join for communities" do
+    user_model
+    @communities = GroupCategory.communities_for(Account.default)
+    group_model(:name => "Algebra Teachers", :group_category => @communities, :join_level => "parent_context_request")
+    group_membership_model(:user => @user, :workflow_state => "requested")
+    @group_membership.workflow_state.should == "requested"
+  end
+
+  context 'permissions' do
+    it "should allow someone to join an open, non-community group" do
+      student_in_course(:active_all => true)
+      student_organized = GroupCategory.student_organized_for(@course)
+      student_group = student_organized.groups.create!(:context => @course, :join_level => "parent_context_auto_join")
+      GroupMembership.new(:user => @student, :group => student_group).grants_right?(@student, :create).should be_true
+
+      course_groups = @course.group_categories.create!
+      course_groups.configure_self_signup(true, false)
+      course_groups.save!
+      course_group = course_groups.groups.create!(:context => @course, :join_level => "invitation_only")
+      GroupMembership.new(:user => @student, :group => course_group).grants_right?(@student, :create).should be_true
+    end
+
+    it "should allow someone to be added to a non-community group" do
+      course_with_teacher(:active_all => true)
+      student_in_course(:active_all => true)
+      course_groups = @course.group_categories.create!
+      course_group = course_groups.groups.create!(:context => @course, :join_level => "invitation_only")
+      GroupMembership.new(:user => @student, :group => course_group).grants_right?(@teacher, :create).should be_true
+
+      @account = @course.root_account
+      account_admin_user(:active_all => true, :account => @account)
+      account_groups = @account.group_categories.create!
+      account_group = account_groups.groups.create!(:context => @account)
+      GroupMembership.new(:user => @student, :group => account_group).grants_right?(@admin, :create).should be_true
+    end
+
+    it "should allow someone to join an open community group" do
+      course_with_teacher(:active_all => true)
+      @account = @course.root_account
+      community_groups = GroupCategory.communities_for(@account)
+      community_group = community_groups.groups.create!(:context => @account, :join_level => "parent_context_auto_join")
+      GroupMembership.new(:user => @teacher, :group => community_group).grants_right?(@teacher, :create).should be_true
+
+    end
+
+    it "should not allow someone to be added to a community group" do
+      course_with_teacher(:active_all => true)
+      @account = @course.root_account
+      account_admin_user(:active_all => true, :account => @account)
+      community_groups = GroupCategory.communities_for(@account)
+      community_group = community_groups.groups.create!(:context => @account, :join_level => "parent_context_auto_join")
+      GroupMembership.new(:user => @teacher, :group => community_group).grants_right?(@admin, :create).should be_false
+    end
+
+    it "should allow a moderator to kick someone from a community" do
+      course_with_teacher(:active_all => true)
+      @account = @course.root_account
+      account_admin_user(:active_all => true, :account => @account)
+      community_groups = GroupCategory.communities_for(@account)
+      community_group = community_groups.groups.create!(:context => @account, :join_level => "parent_context_auto_join")
+      community_group.add_user(@admin, 'accepted', true)
+      community_group.add_user(@teacher, 'accepted', false)
+      GroupMembership.where(:group_id => community_group.id, :user_id => @teacher.id).first.grants_right?(@admin, :delete).should be_true
+    end
+  end
+
+  context 'following' do
+    before do
+      user_model
+      @communities = GroupCategory.communities_for(Account.default)
+      group_model(:name => "Algebra Teachers", :group_category => @communities, :join_level => "parent_context_request")
+    end
+
+    it "should auto-follow the group when joining the group" do
+      @group.add_user(@user, 'accepted')
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should_not be_nil
+    end
+
+    it "should auto-follow the group when a request is accepted" do
+      @membership = @group.add_user(@user, 'requested')
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should be_nil
+      @membership.workflow_state = 'accepted'
+      @membership.save!
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should_not be_nil
+    end
+
+    it "should auto-follow the group when an invitation is accepted" do
+      @membership = @group.add_user(@user, 'invited')
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should be_nil
+      @membership.workflow_state = 'accepted'
+      @membership.save!
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should_not be_nil
+    end
+  end
+
+  context 'unfollowing' do
+    before do
+      user_model
+      @communities = GroupCategory.communities_for(Account.default)
+      group_model(:name => "Algebra Teachers", :group_category => @communities, :join_level => "parent_context_request")
+    end
+
+    it "should auto-unfollow the group when leaving the group" do
+      @membership = @group.add_user(@user, 'accepted')
+      @membership.workflow_state = 'deleted'
+      @membership.save!
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should be_nil
+    end
+
+    it "should auto-unfollow the group when the membership is destroyed" do
+      @membership = @group.add_user(@user, 'accepted')
+      @membership.destroy
+      @user.reload.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' }).should be_nil
     end
   end
 end
-
-def group_membership_model(opts={})
-  do_save = opts.has_key?(:save) ? opts.delete(:save) : true
-  @group_membership = factory_with_protected_attributes(GroupMembership, valid_group_membership_attributes.merge(opts), do_save)
-end
-
-def valid_group_membership_attributes
-  {
-    :group_id => 1, 
-    :user_id => 1
-  }
-end
-
-
-#   include Workflow
-#   
-#   belongs_to :group
-#   belongs_to :user
-#   
-#   before_save :ensure_mutually_exclusive_membership
-#   before_save :assign_uuid
-#   
-#   def assign_uuid
-#     self.uuid ||= UUIDSingleton.instance.generate
-#   end
-#   protected :assign_uuid
-# 
-#   def ensure_mutually_exclusive_membership
-#     return unless self.group
-#     self.group.peer_groups.each do |group|
-#       member = group.group_memberships.find_by_user_id(self.user_id)
-#       member.destroy if member
-#     end
-#   end
-#   protected :ensure_mutually_exclusive_membership
-#   
-#   workflow do
-#     state :new do
-#       event :admit, :transitions_to => :admitted
-#       event :reject, :transitions_to => :rejected
-#     end
-#     
-#     state :admitted do
-#       event :expel, :transitions_to => :expelled
-#     end
-#     
-#     state :expelled
-#     state :rejected
-#     
-#   end
-#   
-# end

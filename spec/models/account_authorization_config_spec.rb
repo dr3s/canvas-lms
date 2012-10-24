@@ -20,11 +20,28 @@ require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
 
 describe AccountAuthorizationConfig do
 
-  it "should not escape auth_filter" do
-    @account = Account.new
-    @account_config = @account.account_authorization_configs.build(:ldap_filter => '(&(!(userAccountControl:1.2.840.113556.1.4.803:=2))(sAMAccountName={{login}}))')
-    @account_config.save
-    @account_config.auth_filter.should eql("(&(!(userAccountControl:1.2.840.113556.1.4.803:=2))(sAMAccountName={{login}}))")
+  context "LDAP settings" do
+    it "should not escape auth_filter" do
+      @account = Account.new
+      @account_config = @account.account_authorization_configs.build(:ldap_filter => '(&(!(userAccountControl:1.2.840.113556.1.4.803:=2))(sAMAccountName={{login}}))')
+      @account_config.save
+      @account_config.auth_filter.should eql("(&(!(userAccountControl:1.2.840.113556.1.4.803:=2))(sAMAccountName={{login}}))")
+    end
+
+    describe "test_ldap_search" do
+      it "should validate filter syntax" do
+        aac = AccountAuthorizationConfig.new
+        aac.auth_type = 'ldap'
+        aac.ldap_filter = 'bob'
+        aac.test_ldap_search.should be_false
+        aac.errors.first.last.should match /Invalid filter syntax/
+
+        aac.errors.clear
+        aac.ldap_filter = '(sAMAccountName={{login}})'
+        aac.test_ldap_search.should be_false
+        aac.errors.first.last.should_not match /Invalid filter syntax/
+      end
+    end
   end
   
   it "should replace empty string with nil" do
@@ -35,6 +52,10 @@ describe AccountAuthorizationConfig do
   end
   
   context "SAML settings" do
+    before(:each) do
+      @account = Account.create!(:name => "account")
+    end
+    
     it "should load encryption settings" do
       file_that_exists = File.expand_path(__FILE__)
       Setting.set_config('saml', {
@@ -42,17 +63,36 @@ describe AccountAuthorizationConfig do
         :tech_contact_name => 'Admin Dude',
         :tech_contact_email => 'admindude@example.com',
         :encryption => {
-          :xmlsec_binary => file_that_exists,
           :private_key => file_that_exists,
           :certificate => file_that_exists
         }
       })
       
-      @account = Account.new
       config = @account.account_authorization_configs.build(:auth_type => 'saml')
       
       s = config.saml_settings
       s.encryption_configured?.should be_true
+    end
+    
+    it "should set the entity_id with the current domain" do
+      HostUrl.stubs(:default_host).returns('bob.cody.instructure.com')
+      @aac = @account.account_authorization_configs.create!(:auth_type => "saml")
+      @aac.entity_id.should == "http://bob.cody.instructure.com/saml2"
+    end
+    
+    it "should not overwrite a specific entity_id" do
+      @aac = @account.account_authorization_configs.create!(:auth_type => "saml", :entity_id => "http://wtb.instructure.com/saml2")
+      @aac.entity_id.should == "http://wtb.instructure.com/saml2"
+    end
+    
+    it "should set requested_authn_context to nil if empty string" do
+      @aac = @account.account_authorization_configs.create!(:auth_type => "saml", :requested_authn_context => "")
+      @aac.requested_authn_context.should == nil
+    end
+    
+    it "should allow requested_authn_context to be set to anything" do
+      @aac = @account.account_authorization_configs.create!(:auth_type => "saml", :requested_authn_context => "anything")
+      @aac.requested_authn_context.should == "anything"
     end
   end
   
@@ -64,5 +104,26 @@ describe AccountAuthorizationConfig do
       c.auth_password = "2t87aot72gho8a37gh4g[awg'waegawe-,v-3o7fya23oya2o3"
       c.auth_decrypted_password.should eql("2t87aot72gho8a37gh4g[awg'waegawe-,v-3o7fya23oya2o3")
     end
+  end
+
+  it "should enable canvas auth when destroyed" do
+    Account.default.settings[:canvas_authentication] = false
+    Account.default.save!
+    Account.default.canvas_authentication?.should be_true
+    aac = Account.default.account_authorization_configs.create!(:auth_type => 'ldap')
+    Account.default.canvas_authentication?.should be_false
+    aac.destroy
+    Account.default.reload.canvas_authentication?.should be_true
+    Account.default.settings[:canvas_authentication].should_not be_false
+    Account.default.account_authorization_configs.create!(:auth_type => 'ldap')
+    # still true
+    Account.default.reload.canvas_authentication?.should be_true
+  end
+
+  it "should disable open registration when created" do
+    Account.default.settings[:open_registration] = true
+    Account.default.save!
+    Account.default.account_authorization_configs.create!(:auth_type => 'cas')
+    Account.default.reload.open_registration?.should be_false
   end
 end

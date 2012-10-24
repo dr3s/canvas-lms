@@ -23,7 +23,7 @@ class ExternalToolsController < ApplicationController
   before_filter :require_context, :require_user
   include Api::V1::ExternalTools
 
-  # @API
+  # @API List external tools
   # Returns the paginated list of external tools for the current context.
   # See the get request docs for a single tool for a list of properties on an external tool.
   #
@@ -103,7 +103,7 @@ class ExternalToolsController < ApplicationController
     end
   end
 
-  # @API
+  # @API Get a single external tool
   # Returns the specified external tool.
   #
   # @response_field id The unique identifier for the tool
@@ -178,18 +178,18 @@ class ExternalToolsController < ApplicationController
       redirect_to named_context_url(@context, :context_url)
       return
     end
+
     @resource_title = @tool.label_for(selection_type.to_sym)
-    @resource_url = @tool.settings[selection_type.to_sym][:url]
-    @opaque_id = @context.opaque_identifier(:asset_string)
-    @resource_type = selection_type
     @return_url ||= url_for(@context)
-    @launch = BasicLTI::ToolLaunch.new(:url => @resource_url, :tool => @tool, :user => @current_user, :context => @context, :link_code => @opaque_id, :return_url => @return_url, :resource_type => @resource_type)
+    @launch = @tool.create_launch(@context, @current_user, @return_url, selection_type)
+    @resource_url = @launch.url
+
     @tool_settings = @launch.generate
     render :template => 'external_tools/tool_show'
   end
   protected :render_tool
 
-  # @API
+  # @API Create an external tool
   # Create an external tool in the specified course/account.
   # The created tool will be returned, see the "show" endpoint for an example.
   #
@@ -200,20 +200,28 @@ class ExternalToolsController < ApplicationController
   # @argument description [string] [optional] A description of the tool
   # @argument url [string] [optional] The url to match links against. Either "url" or "domain" should be set, not both.
   # @argument domain [string] [optional] The domain to match links against. Either "url" or "domain" should be set, not both.
+  # @argument icon_url [string] [optional] The url of the icon to show for this tool
+  # @argument text [string] [optional] The default text to show for this tool
   # @argument custom_fields [string] [optional] Custom fields that will be sent to the tool consumer, specified as custom_fields[field_name]
   # @argument account_navigation[url] [string] [optional] The url of the external tool for account navigation
+  # @argument account_navigation[enabled] [boolean] [optional] Set this to enable this feature
   # @argument account_navigation[text] [string] [optional] The text that will show on the left-tab in the account navigation
   # @argument user_navigation[url] [string] [optional] The url of the external tool for user navigation
+  # @argument user_navigation[enabled] [boolean] [optional] Set this to enable this feature
   # @argument user_navigation[text] [string] [optional] The text that will show on the left-tab in the user navigation
   # @argument course_navigation[url] [string] [optional] The url of the external tool for course navigation
+  # @argument course_navigation[enabled] [boolean] [optional] Set this to enable this feature
   # @argument course_navigation[text] [string] [optional] The text that will show on the left-tab in the course navigation
   # @argument course_navigation[visibility] [string] [optional] Who will see the navigation tab. "admins" for course admins, "members" for students, null for everyone
   # @argument course_navigation[default] [boolean] [optional] Whether the navigation option will show in the course by default or whether the teacher will have to explicitly enable it
   # @argument editor_button[url] [string] [optional] The url of the external tool
+  # @argument editor_button[enabled] [boolean] [optional] Set this to enable this feature
   # @argument editor_button[icon_url] [string] [optional] The url of the icon to show in the WYSIWYG editor
   # @argument editor_button[selection_width] [string] [optional] The width of the dialog the tool is launched in
   # @argument editor_button[selection_height] [string] [optional] The height of the dialog the tool is launched in
   # @argument resource_selection[url] [string] [optional] The url of the external tool
+  # @argument resource_selection[enabled] [boolean] [optional] Set this to enable this feature
+  # @argument resource_selection[icon_url] [string] [optional] The url of the icon to show in the module external tool list
   # @argument resource_selection[selection_width] [string] [optional] The width of the dialog the tool is launched in
   # @argument resource_selection[selection_height] [string] [optional] The height of the dialog the tool is launched in
   # @argument config_type [string] [optional] Configuration can be passed in as CC xml instead of using query parameters. If this value is "by_url" or "by_xml" then an xml configuration will be expected in either the "config_xml" or "config_url" parameter. Note that the name parameter overrides the tool name provided in the xml
@@ -224,41 +232,42 @@ class ExternalToolsController < ApplicationController
   #
   #   This would create a tool on this course with two custom fields and a course navigation tab
   #   curl 'http://<canvas>/api/v1/courses/<course_id>/external_tools' \ 
-  #        -F 'access_token=<token>' \ 
+  #        -H "Authorization: Bearer <token>" \ 
   #        -F 'name=LTI Example' \ 
   #        -F 'consumer_key=asdfg' \ 
   #        -F 'shared_secret=lkjh' \ 
-  #        -F 'url=http://example.com/ims/lti' \ 
+  #        -F 'url=https://example.com/ims/lti' \
   #        -F 'privacy_level=name_only' \ 
   #        -F 'custom_fields[key1]=value1' \ 
   #        -F 'custom_fields[key2]=value2' \ 
-  #        -F 'course_navigation[url]=http://example.com/ims/lti/course_endpoint' \ 
-  #        -F 'course_navigation[text]=Course Materials' \ 
+  #        -F 'course_navigation[text]=Course Materials' \
   #        -F 'course_navigation[default]=false'
-  # 
+  #        -F 'course_navigation[enabled]=true'
+  #
   # @example_request
   #
   #   This would create a tool on the account with navigation for the user profile page
   #   curl 'http://<canvas>/api/v1/accounts/<account_id>/external_tools' \ 
-  #        -F 'access_token=<token>' \ 
+  #        -H "Authorization: Bearer <token>" \ 
   #        -F 'name=LTI Example' \ 
   #        -F 'consumer_key=asdfg' \ 
   #        -F 'shared_secret=lkjh' \ 
-  #        -F 'url=http://example.com/ims/lti' \ 
+  #        -F 'url=https://example.com/ims/lti' \
   #        -F 'privacy_level=name_only' \ 
-  #        -F 'user_navigation[url]=http://example.com/ims/lti/user_endpoint' \ 
-  #        -F 'user_navigation[text]=Soemthing Cool'  
-  # 
+  #        -F 'user_navigation[url]=https://example.com/ims/lti/user_endpoint' \
+  #        -F 'user_navigation[text]=Something Cool'
+  #        -F 'user_navigation[enabled]=true'
+  #
   # @example_request
   #
   #   This would create a tool on the account with configuration pulled from an external URL
   #   curl 'http://<canvas>/api/v1/accounts/<account_id>/external_tools' \ 
-  #        -F 'access_token=<token>' \ 
+  #        -H "Authorization: Bearer <token>" \ 
   #        -F 'name=LTI Example' \ 
   #        -F 'consumer_key=asdfg' \ 
   #        -F 'shared_secret=lkjh' \ 
   #        -F 'config_type=by_url' \ 
-  #        -F 'config_url=http://example.com/ims/lti/tool_config.xml'
+  #        -F 'config_url=https://example.com/ims/lti/tool_config.xml'
   def create
     if authorized_action(@context, @current_user, :update)
       @tool = @context.context_external_tools.new
@@ -277,14 +286,14 @@ class ExternalToolsController < ApplicationController
     end
   end
 
-  # @API
+  # @API Edit an external tool
   # Update the specified external tool. Uses same parameters as create
   #
   # @example_request
   #
   #   This would update the specified keys on this external tool
   #   curl 'http://<canvas>/api/v1/courses/<course_id>/external_tools/<external_tool_id>' \ 
-  #        -F 'access_token=<token>' \ 
+  #        -H "Authorization: Bearer <token>" \ 
   #        -F 'name=Public Example' \ 
   #        -F 'privacy_level=public' 
   def update
@@ -327,14 +336,11 @@ class ExternalToolsController < ApplicationController
   private
   
   def set_tool_attributes(tool, params)
-    [:name, :description, :url, :domain, :privacy_level, :consumer_key, :shared_secret,
+    [:name, :description, :url, :icon_url, :domain, :privacy_level, :consumer_key, :shared_secret,
     :custom_fields, :custom_fields_string, :account_navigation, :user_navigation, 
-    :course_navigation, :editor_button, :resource_selection,
+    :course_navigation, :editor_button, :resource_selection, :text,
     :config_type, :config_url, :config_xml].each do |prop|
       tool.send("#{prop}=", params[prop]) if params.has_key?(prop)
     end
   end
-  
-  
-  
 end

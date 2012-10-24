@@ -23,23 +23,45 @@ class HostUrl
     @@default_host = nil
     @@file_host = nil
     @@domain_config = nil
+    @@protocol = nil
 
     def reset_cache!
-      @@default_host = @@file_host = @@domain_config = nil
+      @@default_host = @@file_host = @@domain_config = @@protocol = nil
     end
 
     def domain_config
       if !@@domain_config
-        @@domain_config = File.exist?("#{RAILS_ROOT}/config/domain.yml") && YAML.load_file("#{RAILS_ROOT}/config/domain.yml")[RAILS_ENV].try(:with_indifferent_access)
+        @@domain_config = Setting.from_config("domain")
         @@domain_config ||= {}
       end
       @@domain_config
     end
 
-    def context_host(context=nil, preferred_account_domain=nil)
+    # returns "http" or "https" depending on whether this instance of canvas runs over ssl
+    def protocol
+      if !@@protocol
+        if domain_config.key?('ssl')
+          is_secure = domain_config['ssl']
+        elsif Attachment.file_store_config.key?('secure')
+          is_secure = Attachment.file_store_config['secure']
+        else
+          is_secure = Rails.env.production?
+        end
+
+        @@protocol = is_secure ? "https" : "http"
+      end
+
+      @@protocol
+    end
+
+    def context_host(context=nil, current_host=nil)
       default_host
     end
-    
+
+    def context_hosts(context=nil, current_host=nil)
+      Array(context_host(context, current_host))
+    end
+
     def default_host
       if !@@default_host
         @@default_host = domain_config[:domain] if domain_config.has_key?(:domain)
@@ -49,7 +71,7 @@ class HostUrl
       res
     end
     
-    def file_host(account)
+    def file_host(account, current_host = nil)
       return @@file_host if @@file_host
       res = nil
       res = @@file_host = domain_config[:files_domain] if domain_config.has_key?(:files_domain)
@@ -79,6 +101,10 @@ class HostUrl
     def is_file_host?(domain)
       safer_host = file_host(Account.default)
       safer_host != default_host && domain == safer_host
+    end
+
+    def has_file_host?
+      default_host != file_host(Account.default)
     end
   end
 end

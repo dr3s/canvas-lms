@@ -20,11 +20,11 @@
 #
 # API for accessing Assignment Group and Assignment information.
 class AssignmentGroupsController < ApplicationController
-  before_filter :require_user_for_context
+  before_filter :require_context
 
   include Api::V1::Assignment
 
-  # @API
+  # @API List assignment groups
   # Returns the list of assignment groups for the current context. The returned
   # groups are sorted by their position field.
   #
@@ -80,10 +80,11 @@ class AssignmentGroupsController < ApplicationController
             # note that 'rules_hash' gets to_jsoned as just 'rules' because that is what GradeCalculator expects. 
             hash['rules'] = group.rules_hash
             if include_assignments
-              hash['assignments'] = group.assignments.active.map { |a| assignment_json(a, @current_user, session, [], @context.user_is_teacher?(@current_user)) }
+              hash['assignments'] = group.assignments.active.map { |a| assignment_json(a, @current_user, session) }
             end
             hash
           end
+          hashes.each { |group| group['group_weight'] = nil } unless @context.apply_group_weights?
           render :json => hashes.to_json
         }
       end
@@ -175,6 +176,15 @@ class AssignmentGroupsController < ApplicationController
   def destroy
     @assignment_group = AssignmentGroup.find(params[:id])
     if authorized_action(@assignment_group, @current_user, :delete)
+      if @assignment_group.has_frozen_assignments?(@current_user)
+        @assignment_group.errors.add('workflow_state', t('errors.cannot_delete_group', "You can not delete a group with a locked assignment.", :att_name => 'workflow_state'))
+        respond_to do |format|
+          format.html { redirect_to named_context_url(@context, :context_assignments_url) }
+          format.json { render :json => @assignment_group.errors.to_json, :status => :bad_request }
+        end
+        return
+      end
+
       if params[:move_assignments_to]
         @new_group = @context.assignment_groups.active.find(params[:move_assignments_to])
         order = @new_group.assignments.active.map(&:id)

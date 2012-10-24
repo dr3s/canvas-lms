@@ -15,8 +15,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-
-(function($) {
+define([
+  'jquery' /* $ */,
+  'jqueryui/draggable' /* /\.draggable/ */,
+  'jqueryui/droppable' /* /\.droppable/ */
+], function($) {
   $.fn.instTree = function(options) {
     return $(this).each(function() {
       var binded = false;
@@ -352,7 +355,12 @@
             }
           }
         });
-        
+
+        tree.on('keyup', function(e) {
+          if (e.keyPressed !== 13) return;
+          it.ToggleNode(obj, $(e.target));
+        });
+
         tree.dblclick(function(e) {
           var clicked = $(e.target);
 
@@ -385,6 +393,7 @@
       };//ToggleNode
       it.ExpandNode = function(obj, node) {
         node.addClass('open');
+        node.attr('aria-expanded', true);
 
         if (it.opts.autoclose) {
           node.siblings('.open').each(function() {
@@ -417,6 +426,7 @@
   
       it.CollapseNode = function(node) {
         node.removeClass('open');
+        node.attr('aria-expanded', false);
 
         if ($.browser.msie) {
           node.children('ul').hide();
@@ -438,4 +448,4 @@
       }//if ($(this).is('ul'))
     });
   };
-})(jQuery);
+});

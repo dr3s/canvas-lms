@@ -31,7 +31,7 @@ describe "accounts/settings.html.erb" do
       assigns[:account_users] = []
       assigns[:root_account] = @account
       assigns[:associated_courses_count] = 0
-      assigns[:account_notifications] = []
+      assigns[:announcements] = []
     end
 
     it "should show to sis admin" do
@@ -59,7 +59,7 @@ describe "accounts/settings.html.erb" do
       assigns[:account_users] = []
       assigns[:root_account] = @account
       assigns[:associated_courses_count] = 0
-      assigns[:account_notifications] = []
+      assigns[:announcements] = []
       admin = account_admin_user
       view_context(@account, admin)
     end
@@ -67,12 +67,43 @@ describe "accounts/settings.html.erb" do
     it "should show by default" do
       render
       response.should have_tag("input#account_settings_open_registration")
+      response.should_not have_tag("div#open_registration_delegated_warning_dialog")
     end
 
-    it "should not show when a delegated auth config is around" do
+    it "should show warning dialog when a delegated auth config is around" do
       @account.account_authorization_configs.create!(:auth_type => 'cas')
       render
-      response.should_not have_tag("input#account_settings_open_registration")
+      response.should have_tag("input#account_settings_open_registration")
+      response.should have_tag("div#open_registration_delegated_warning_dialog")
+    end
+  end
+
+  describe "managed by site admins" do
+    before do
+      @account = Account.default
+      assigns[:account] = @account
+      assigns[:account_users] = []
+      assigns[:root_account] = @account
+      assigns[:associated_courses_count] = 0
+      assigns[:announcements] = []
+    end
+
+    it "should show settings that can only be managed by site admins" do
+      admin = site_admin_user
+      view_context(@account, admin)
+      render
+      response.should have_tag("input#account_settings_global_includes")
+      response.should have_tag("input#account_settings_enable_scheduler")
+      response.should have_tag("input#account_settings_enable_profiles")
+    end
+
+    it "it should not show settings to regular admin user" do
+      admin = account_admin_user
+      view_context(@account, admin)
+      render
+      response.should_not have_tag("input#account_settings_global_includes")
+      response.should_not have_tag("input#account_settings_enable_scheduler")
+      response.should_not have_tag("input#account_settings_enable_profiles")
     end
   end
 end

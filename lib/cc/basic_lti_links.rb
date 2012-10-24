@@ -21,7 +21,7 @@ module CC
       return nil unless @course.context_external_tools.active.count > 0
 
       @course.context_external_tools.active.each do |tool|
-
+        next unless export_object?(tool)
         migration_id = CCHelper::create_key(tool)
 
         lti_file_name = "#{migration_id}.xml"
@@ -61,6 +61,7 @@ module CC
         elsif tool.url =~ %r{https://}
           blti_node.blti :secure_launch_url, tool.url
         end
+        blti_node.blti(:icon, tool.settings[:icon_url]) if tool.settings[:icon_url]
         blti_node.blti :vendor do |v_node|
           v_node.lticp :code, 'unknown'
           v_node.lticp :name, 'unknown'
@@ -75,8 +76,13 @@ module CC
         end
 
         blti_node.blti(:extensions, :platform => CC::CCHelper::CANVAS_PLATFORM) do |ext_node|
+          ext_node.lticm(:property, tool.tool_id, 'name' => 'tool_id') if tool.tool_id
           ext_node.lticm :property, tool.workflow_state, 'name' => 'privacy_level'
           ext_node.lticm(:property, tool.domain, 'name' => 'domain') unless tool.domain.blank?
+          if for_course_copy
+            ext_node.lticm :property, tool.consumer_key, 'name' => 'consumer_key'
+            ext_node.lticm :property, tool.shared_secret, 'name' => 'shared_secret'
+          end
           [:user_navigation, :course_navigation, :account_navigation, :resource_selection, :editor_button].each do |type|
             if tool.settings[type]
               ext_node.lticm(:options, :name => type.to_s) do |type_node|

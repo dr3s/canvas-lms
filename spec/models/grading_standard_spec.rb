@@ -74,4 +74,57 @@ describe GradingStandard do
     compare_schemes(standard.data, GradingStandard.default_grading_standard)
     compare_schemes(standard.data, GradingStandard.default_grading_standard)
   end
+
+  context "standards_for" do
+    it "should return standards that match the context" do
+      course_with_teacher
+      grading_standard_for @course
+      
+      standards = GradingStandard.standards_for(@course)
+      standards.length.should == 1
+      standards[0].id.should == @standard.id
+    end
+
+    it "should include standards made in the parent account" do
+      course_with_teacher
+      grading_standard_for @course.root_account
+      
+      standards = GradingStandard.standards_for(@course)
+      standards.length.should == 1
+      standards[0].id.should == @standard.id
+    end
+  end
+
+  context "score_to_grade" do
+    it "should compute correct grades" do
+      input = [['A', 0.90], ['B', 0.80], ['C', 0.675], ['D', 0.55], ['E', 0.00]]
+      standard = GradingStandard.new
+      standard.data = input
+      standard.score_to_grade(1005).should eql("A")
+      standard.score_to_grade(105).should eql("A")
+      standard.score_to_grade(100).should eql("A")
+      standard.score_to_grade(99).should eql("A")
+      standard.score_to_grade(90).should eql("A")
+      standard.score_to_grade(89.999).should eql("B")
+      standard.score_to_grade(89.001).should eql("B")
+      standard.score_to_grade(89).should eql("B")
+      standard.score_to_grade(88.999).should eql("B")
+      standard.score_to_grade(80).should eql("B")
+      standard.score_to_grade(79).should eql("C")
+      standard.score_to_grade(67.501).should eql("C")
+      standard.score_to_grade(67.5).should eql("C")
+      standard.score_to_grade(67.499).should eql("D")
+      standard.score_to_grade(60).should eql("D")
+      standard.score_to_grade(50).should eql("E")
+      standard.score_to_grade(0).should eql("E")
+      standard.score_to_grade(-100).should eql("E")
+    end
+
+    it "should assign the lowest grade to below-scale scores" do
+      input = [['A', 0.90], ['B', 0.80], ['C', 0.70], ['D', 0.60], ['E', 0.50]]
+      standard = GradingStandard.new
+      standard.data = input
+      standard.score_to_grade(40).should eql("E")
+    end
+  end
 end

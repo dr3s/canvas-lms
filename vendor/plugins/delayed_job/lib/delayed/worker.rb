@@ -11,9 +11,15 @@ class Worker
 
   self.max_attempts = 15
   self.max_run_time = 4.hours
+
+  def self.queue=(queue_name)
+    raise(ArgumentError, "queue_name must not be blank") if queue_name.blank?
+    @@queue = queue_name
+  end
+
   self.queue = "canvas_queue"
 
-  attr_reader :config, :queue, :min_priority, :max_priority, :sleep_delay
+  attr_reader :config, :queue, :min_priority, :max_priority, :sleep_delay, :sleep_delay_stagger
 
   # Callback to fire when a delayed job fails max_attempts times. If this
   # callback is defined, then the value of destroy_failed_jobs is ignored, and
@@ -81,11 +87,11 @@ class Worker
   def run
     # need to do this here, since we're avoiding db calls in the master process pre-fork
     @sleep_delay ||= Setting.get_cached('delayed_jobs_sleep_delay', '5.0').to_f
+    @sleep_delay_stagger ||= Setting.get_cached('delayed_jobs_sleep_delay_stagger', '2.5').to_f
     @make_tmpdir ||= Setting.get_cached('delayed_jobs_unique_tmpdir', 'true') == 'true'
 
     job = Delayed::Job.get_and_lock_next_available(
       name,
-      self.class.max_run_time,
       queue,
       min_priority,
       max_priority)
@@ -93,9 +99,8 @@ class Worker
     if job
       configure_for_job(job) do
         ensure_db_connection
-        perform(job)
+        @job_count += perform(job)
 
-        @job_count += 1
         if @max_job_count > 0 && @job_count >= @max_job_count
           say "Max job count of #{@max_job_count} exceeded, dying"
           @exit = true
@@ -113,23 +118,45 @@ class Worker
       end
     else
       set_process_name("wait:#{@queue}:#{min_priority || 0}:#{max_priority || 'max'}")
-      sleep(sleep_delay)
+      sleep(sleep_delay + (rand * sleep_delay_stagger))
     end
   end
 
   def perform(job)
+    count = 1
     set_process_name("run:#{job.id}:#{job.name}")
     say("Processing #{log_job(job, :long)}", :info)
     runtime = Benchmark.realtime do
-      Timeout.timeout(self.class.max_run_time.to_i, Delayed::TimeoutError) { job.invoke_job }
+      if job.batch?
+        # each job in the batch will have perform called on it, so we don't
+        # need a timeout around this 
+        count = perform_batch(job.payload_object)
+      else
+        Timeout.timeout(self.class.max_run_time.to_f, Delayed::TimeoutError) { job.invoke_job }
+      end
       Delayed::Stats.job_complete(job, self)
       Rails.logger.silence do
         job.destroy
       end
     end
-    say("Completed #{log_job(job)} %.0fms" % (runtime * 1000), :info)
+    say("Completed #{log_job(job)} #{"%.0fms" % (runtime * 1000)}", :info)
+    count
   rescue Exception => e
     handle_failed_job(job, e)
+    count
+  end
+
+  def perform_batch(batch)
+    if batch.mode == :serial
+      batch.jobs.each do |job|
+        job.create_and_lock!(name)
+        configure_for_job(job) do
+          ensure_db_connection
+          perform(job)
+        end
+      end
+      batch.items.size
+    end
   end
 
   def handle_failed_job(job, error)

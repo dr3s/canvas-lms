@@ -1,7 +1,51 @@
 module UserContent
-  def self.escape(str)
+  def self.escape(str, current_host = nil)
     html = Nokogiri::HTML::DocumentFragment.parse(str)
-    html.css('object,embed').each_with_index do |obj, idx|
+    find_user_content(html) do |obj, uc|
+      uuid = UUIDSingleton.instance.generate
+      child = Nokogiri::XML::Node.new("iframe", html)
+      child['class'] = 'user_content_iframe'
+      child['name'] = uuid
+      child['style'] = "width: #{uc.width}; height: #{uc.height}"
+      child['frameborder'] = '0'
+
+      form = Nokogiri::XML::Node.new("form", html)
+      form['action'] = "//#{HostUrl.file_host(@domain_root_account || Account.default, current_host)}/object_snippet"
+      form['method'] = 'post'
+      form['class'] = 'user_content_post_form'
+      form['target'] = uuid
+      form['id'] = "form-#{uuid}"
+
+      input = Nokogiri::XML::Node.new("input", html)
+      input['type'] = 'hidden'
+      input['name'] = 'object_data'
+      input['value'] = uc.node_string
+      form.add_child(input)
+
+      s_input = Nokogiri::XML::Node.new("input", html)
+      s_input['type'] = 'hidden'
+      s_input['name'] = 's'
+      s_input['value'] = uc.node_hmac
+      form.add_child(s_input)
+
+      obj.replace(child)
+      child.add_next_sibling(form)
+    end
+
+    html.css('img.equation_image').each do |node|
+      mathml = Nokogiri::HTML::DocumentFragment.parse('<span class="hidden-readable">' + Ritex::Parser.new.parse(node.delete('alt').value) + '</span>') rescue next
+      node.add_next_sibling(mathml)
+    end
+
+    html.to_s.html_safe
+  end
+
+  class Node < Struct.new(:width, :height, :node_string, :node_hmac)
+  end
+
+  # for each user content in the nokogiri document, yields |nokogiri_node, UserContent::Node|
+  def self.find_user_content(html)
+    html.css('object,embed').each do |obj|
       styles = {}
       params = {}
       obj.css('param').each do |param|
@@ -20,49 +64,31 @@ module UserContent
       height ||= css_size(styles['height'])
       height ||= '300px'
 
-      uuid = UUIDSingleton.instance.generate
-      child = Nokogiri::XML::Node.new("iframe", html)
-      child['class'] = 'user_content_iframe'
-      child['name'] = uuid
-      child['style'] = "width: #{width}; height: #{height}"
-      child['frameborder'] = '0'
-
-      form = Nokogiri::XML::Node.new("form", html)
-      form['action'] = "//#{HostUrl.file_host(@domain_root_account || Account.default)}/object_snippet"
-      form['method'] = 'post'
-      form['class'] = 'user_content_post_form'
-      form['target'] = uuid
-      form['id'] = "form-#{uuid}"
-
-      input = Nokogiri::XML::Node.new("input", html)
-      input['type'] = 'hidden'
-      input['name'] = 'object_data'
       snippet = Base64.encode64(obj.to_s).gsub("\n", '')
-      input['value'] = snippet
-      form.add_child(input)
+      hmac = Canvas::Security.hmac_sha1(snippet)
+      uc = Node.new(width, height, snippet, hmac)
 
-      s_input = Nokogiri::XML::Node.new("input", html)
-      s_input['type'] = 'hidden'
-      s_input['name'] = 's'
-      s_input['value'] = Canvas::Security.hmac_sha1(snippet)
-      form.add_child(s_input)
-
-      obj.replace(child)
-      child.add_next_sibling(form)
+      yield obj, uc
     end
-    html.css('img.equation_image').each do |node|
-      mathml = Nokogiri::HTML::DocumentFragment.parse('<span class="hidden-readable">' + Ritex::Parser.new.parse(node.delete('alt').value) + '</span>') rescue next
-      node.add_next_sibling(mathml)
-    end
-
-    html.to_s.html_safe
   end
 
+  # TODO: try and discover the motivation behind the "huhs"
   def self.css_size(val)
-    res = val.to_f
-    res = nil if res == 0
-    res = (res + 10).to_s + "px" if res && res.to_s == val
-    res
+    if !val || val.to_f == 0
+      # no value, non-numeric value, or 0 value (whether "0", "0px", "0%",
+      # etc.); ignore
+      nil
+    elsif val == "#{val.to_f.to_s}%" || val == "#{val.to_f.to_s}px"
+      # numeric percentage or specific px value; use as is
+      val
+    elsif val.to_f.to_s == val
+      # unadorned numeric value; make px (after adding 10... huh?)
+      (val.to_f + 10).to_s + "px"
+    else
+      # numeric value embedded, but has additional text we didn't recognize;
+      # just extract the numeric part (without a px... huh?)
+      val.to_f.to_s
+    end
   end
 
   class HtmlRewriter
@@ -82,6 +108,7 @@ module UserContent
       'external_tools' => nil,
       'file_contents' => nil,
       'modules' => ContextModule,
+      'items' => ContentTag
     }
     DefaultAllowedTypes = AssetTypes.keys
 
@@ -91,7 +118,7 @@ module UserContent
       @user = user
       # capture group 1 is the object type, group 2 is the object id, if it's
       # there, and group 3 is the rest of the url, including any beginning '/'
-      @toplevel_regex = %r{/#{context.class.name.tableize}/#{context.id}/(\w+)(?:/(\d+))?(/[^\s"]*)?}
+      @toplevel_regex = %r{/#{context.class.name.tableize}/#{context.id}/(\w+)(?:/(\d+))?(/[^\s"<']*)?}
       @handlers = {}
       @default_handler = nil
       @unknown_handler = nil
@@ -126,9 +153,13 @@ module UserContent
       asset_types = AssetTypes.reject { |k,v| !@allowed_types.include?(k) }
 
       html.gsub(@toplevel_regex) do |relative_url|
-        type = $1
-        obj_id = $2.to_i
-        rest = $3
+        type, obj_id, rest = [$1, $2.to_i, $3]
+
+        if module_item = rest.try(:match, %r{/items/(\d+)})
+          type   = 'items'
+          obj_id = module_item[1].to_i
+        end
+
         if asset_types.key?(type)
           match = UriMatch.new(relative_url, type, asset_types[type], (obj_id > 0 ? obj_id : nil), rest)
           handler = @handlers[type] || @default_handler

@@ -16,22 +16,29 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+require 'set'
+
 class Folder < ActiveRecord::Base
+  def self.name_order_by_clause(table = nil)
+    col = table ? "#{table}.name" : 'name'
+    best_unicode_collation_key(col)
+  end
   include Workflow
-  attr_accessible :name, :full_name, :parent_folder, :workflow_state, :lock_at, :unlock_at, :locked, :hidden, :context
+  attr_accessible :name, :full_name, :parent_folder, :workflow_state, :lock_at, :unlock_at, :locked, :hidden, :context, :position
 
   ROOT_FOLDER_NAME = "course files"
   PROFILE_PICS_FOLDER_NAME = "profile pictures"
   MY_FILES_FOLDER_NAME = "my files"
+  CONVERSATION_ATTACHMENTS_FOLDER_NAME = "conversation attachments"
 
   belongs_to :context, :polymorphic => true
   belongs_to :cloned_item
   belongs_to :parent_folder, :class_name => "Folder"
-  has_many :file_attachments, :class_name => "Attachment", :order => 'position'
-  has_many :active_file_attachments, :class_name => 'Attachment', :conditions => ['attachments.file_state != ?', 'deleted'], :order => 'position, display_name'
-  has_many :visible_file_attachments, :class_name => 'Attachment', :conditions => ['attachments.file_state in (?, ?)', 'available', 'public'], :order => 'position, display_name'
-  has_many :sub_folders, :class_name => "Folder", :foreign_key => "parent_folder_id", :dependent => :destroy, :order => 'position'
-  has_many :active_sub_folders, :class_name => "Folder", :conditions => ['folders.workflow_state != ?', 'deleted'], :foreign_key => "parent_folder_id", :dependent => :destroy, :order => 'position'
+  has_many :file_attachments, :class_name => "Attachment"
+  has_many :active_file_attachments, :class_name => 'Attachment', :conditions => ['attachments.file_state != ?', 'deleted']
+  has_many :visible_file_attachments, :class_name => 'Attachment', :conditions => ['attachments.file_state in (?, ?)', 'available', 'public']
+  has_many :sub_folders, :class_name => "Folder", :foreign_key => "parent_folder_id", :dependent => :destroy
+  has_many :active_sub_folders, :class_name => "Folder", :conditions => ['folders.workflow_state != ?', 'deleted'], :foreign_key => "parent_folder_id", :dependent => :destroy
   
   acts_as_list :scope => :parent_folder
   
@@ -41,9 +48,23 @@ class Folder < ActiveRecord::Base
   after_destroy :clean_up_children
   after_save :touch_context
   before_save :infer_hidden_state
-  validates_presence_of :context_id
-  validates_presence_of :context_type
-  
+  validates_presence_of :context_id, :context_type
+  validate_on_update :reject_recursive_folder_structures
+
+  def reject_recursive_folder_structures
+    return true if !self.parent_folder_id_changed?
+    seen_folders = Set.new([self])
+    folder = self
+    while folder.parent_folder
+      folder = folder.parent_folder
+      if seen_folders.include?(folder)
+        errors.add(:parent_folder_id, t("errors.invalid_recursion", "A folder cannot be the parent of itself"))
+        return false
+      end
+      seen_folders << folder
+    end
+    return true
+  end
 
   workflow do
     # Anyone who has read access to the course can view
@@ -67,6 +88,9 @@ class Folder < ActiveRecord::Base
   end
   
   named_scope :active, :conditions => ['folders.workflow_state != ?', 'deleted']
+  named_scope :not_hidden, :conditions => ['folders.workflow_state != ?', 'hidden']
+  named_scope :by_position, :order => 'position'
+  named_scope :by_name, :order => name_order_by_clause('folders')
 
   def display_name
     name
@@ -152,7 +176,7 @@ class Folder < ActiveRecord::Base
   end
   
   def hidden=(val)
-    self.workflow_state = (val == true || val == '1' ? 'hidden' : 'visible')
+    self.workflow_state = (val == true || val == '1' || val == 'true' ? 'hidden' : 'visible')
   end
   
   def just_hide
@@ -171,6 +195,11 @@ class Folder < ActiveRecord::Base
   
   def mime_class
     "folder"
+  end
+
+  # true if there are any active files or folders
+  def has_contents?
+    self.active_file_attachments.any? || self.active_sub_folders.any?
   end
   
   attr_accessor :clone_updated

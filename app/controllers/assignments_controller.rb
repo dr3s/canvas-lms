@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2012 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -16,7 +16,10 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+# @API Assignments
 class AssignmentsController < ApplicationController
+  include Api::V1::Assignment
+
   include GoogleDocs
   before_filter :require_context
   add_crumb(proc { t '#crumbs.assignments', "Assignments" }, :except => [:destroy, :syllabus, :index]) { |c| c.send :course_assignments_path, c.instance_variable_get("@context") }
@@ -67,11 +70,11 @@ class AssignmentsController < ApplicationController
       end
       @locked = @assignment.locked_for?(@current_user, :check_policies => true, :deep_check_if_needed => true)
       @unlocked = !@locked || @assignment.grants_rights?(@current_user, session, :update)[:update]
-      @assignment_module = @assignment.context_module_tag
+      @assignment_module = ContextModuleItem.find_tag_with_preferred([@assignment], params[:module_item_id])
       @assignment.context_module_action(@current_user, :read) if @unlocked && !@assignment.new_record?
       if @assignment.grants_right?(@current_user, session, :grade)
-        student_ids = @context.students.map(&:id)
-        @current_student_submissions = @assignment.submissions.having_submission.select{|s| student_ids.include?(s.user_id) }
+        visible_student_ids = @context.enrollments_visible_to(@current_user).find(:all, :select => 'user_id').map(&:user_id)
+        @current_student_submissions = @assignment.submissions.scoped(:conditions => "submissions.submission_type IS NOT NULL").select{|s| visible_student_ids.include?(s.user_id) }
       end
       if @assignment.grants_right?(@current_user, session, :read_own_submission) && @context.grants_right?(@current_user, session, :read_grades)
         @current_user_submission = @assignment.submissions.find_by_user_id(@current_user.id) if @current_user
@@ -79,7 +82,9 @@ class AssignmentsController < ApplicationController
         @current_user_rubric_assessment = @assignment.rubric_association.rubric_assessments.find_by_user_id(@current_user.id) if @current_user && @assignment.rubric_association
         @current_user_submission.send_later(:context_module_action) if @current_user_submission
       end
-      if @assignment.submission_types && @assignment.submission_types.match(/online_upload/)
+
+      # prevent masquerading users from accessing google docs
+      if @assignment.allow_google_docs_submission? && @real_current_user.blank?
         # TODO: make this happen asynchronously via ajax, and only if the user selects the google docs tab
         @google_docs = google_doc_list(nil, @assignment.allowed_extensions) rescue nil
       end
@@ -93,11 +98,11 @@ class AssignmentsController < ApplicationController
       respond_to do |format|
         if @assignment.submission_types == 'online_quiz' && @assignment.quiz && !@editing
           format.html { redirect_to named_context_url(@context, :context_quiz_url, @assignment.quiz.id) }
-        elsif @assignment.submission_types == 'discussion_topic' && @assignment.discussion_topic && !@editing
+        elsif @assignment.submission_types == 'discussion_topic' && @assignment.discussion_topic && !@editing && @assignment.discussion_topic.grants_right?(@current_user, session, :read)
           format.html { redirect_to named_context_url(@context, :context_discussion_topic_url, @assignment.discussion_topic.id) }
         elsif @assignment.submission_types == 'attendance' && !@editing
           format.html { redirect_to named_context_url(@context, :context_attendance_url, :anchor => "assignment/#{@assignment.id}") }
-        elsif @assignment.submission_types == 'external_tool' && !@editing && @assignment.external_tool_tag
+        elsif @assignment.submission_types == 'external_tool' && !@editing && @assignment.external_tool_tag && @unlocked
           format.html { content_tag_redirect(@context, @assignment.external_tool_tag, :context_url) }
         else
           format.html { render :action => 'show' }
@@ -178,7 +183,7 @@ class AssignmentsController < ApplicationController
         redirect_to named_context_url(@context, :context_assignment_url, @assignment.id)
         return
       end
-      @students = @context.students_visible_to(@current_user)
+      @students = @context.students_visible_to(@current_user).order_by_sortable_name
       @submissions = @assignment.submissions.include_assessment_requests
     end
   end
@@ -190,8 +195,7 @@ class AssignmentsController < ApplicationController
       return unless tab_enabled?(@context.class::TAB_SYLLABUS)
       @groups = @context.assignment_groups.active.find(:all, :order => 'position, name')
       @assignment_groups = @groups
-      @events = @context.calendar_events.active.to_a
-      @events.concat @context.assignments.active.to_a
+      @events = @context.events_for(@current_user)
       @undated_events = @events.select {|e| e.start_at == nil}
       @dates = (@events.select {|e| e.start_at != nil}).map {|e| e.start_at.to_date}.uniq.sort.sort
       
@@ -217,22 +221,12 @@ class AssignmentsController < ApplicationController
   end
 
   def new
-    if !params[:model_key]
-      args = request.query_parameters
-      args[:model_key] = rand(999999).to_s
-      redirect_to(args)
-      return
-    end
     @assignment ||= Assignment.new(:context => @context)
-    if params[:model_key] && session["assignment_#{params[:model_key]}"].present?
-      @assignment = @context.assignments.find_by_id(session["assignment_#{params[:model_key]}"])
-    else
-      @assignment.title = params[:title]
-      @assignment.due_at = params[:due_at]
-      @assignment.points_possible = params[:points_possible]
-      @assignment.assignment_group_id = params[:assignment_group_id]
-      @assignment.submission_types = params[:submission_types]
-    end
+    @assignment.title = params[:title]
+    @assignment.due_at = params[:due_at]
+    @assignment.points_possible = params[:points_possible]
+    @assignment.assignment_group_id = params[:assignment_group_id]
+    @assignment.submission_types = params[:submission_types]
     if authorized_action(@assignment, @current_user, :create)
       @assignment.title = params[:title]
       @assignment.due_at = params[:due_at]
@@ -247,10 +241,6 @@ class AssignmentsController < ApplicationController
   def create
     params[:assignment][:time_zone_edited] = Time.zone.name if params[:assignment]
     group = get_assignment_group(params[:assignment])
-    if params[:model_key] && session["assignment_#{params[:model_key]}"].present?
-      @assignment = @context.assignments.find_by_id(session["assignment_#{params[:model_key]}"])
-      @assignment.attributes = params[:assignment] if @assignment
-    end
     @assignment ||= @context.assignments.build(params[:assignment])
     @assignment.workflow_state = "available"
     @assignment.content_being_saved_by(@current_user)
@@ -260,9 +250,6 @@ class AssignmentsController < ApplicationController
     if authorized_action(@assignment, @current_user, :create)
       respond_to do |format|
         if @assignment.save
-          if params[:model_key]
-            session["assignment_#{params[:model_key]}"] = @assignment.id
-          end
           flash[:notice] = t 'notices.created', "Assignment was successfully created."
           format.html { redirect_to named_context_url(@context, :context_assignment_url, @assignment.id) }
           format.json { render :json => @assignment.to_json(:permissions => {:user => @current_user, :session => session}), :status => :created}
@@ -299,6 +286,7 @@ class AssignmentsController < ApplicationController
         params[:assignment] = p
       else
         params[:assignment] ||= {}
+        @assignment.updating_user = @current_user
         if params[:assignment][:default_grade]
           params[:assignment][:overwrite_existing_grades] = (params[:assignment][:overwrite_existing_grades] == "1")
           @assignment.set_default_grade(params[:assignment])
@@ -341,14 +329,23 @@ class AssignmentsController < ApplicationController
     end
   end
 
+  # @API Delete an assignment
+  #
+  # Delete the given assignment.
+  #
+  # @example_request
+  #     curl https://<canvas>/api/v1/courses/<course_id>/assignments/<assignment_id> \ 
+  #          -X DELETE \ 
+  #          -H 'Authorization: Bearer <token>'
+  # @returns Assignment
   def destroy
-    @assignment = Assignment.find(params[:id])
+    @assignment = @context.assignments.active.find(params[:id])
     if authorized_action(@assignment, @current_user, :delete)
       @assignment.destroy
 
       respond_to do |format|
         format.html { redirect_to(named_context_url(@context, :context_assignments_url)) }
-        format.json { render :json => @assignment.to_json }
+        format.json { render :json => assignment_json(@assignment, @current_user, session) }
       end
     end
   end

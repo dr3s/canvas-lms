@@ -25,27 +25,29 @@ class PageView < ActiveRecord::Base
   belongs_to :user
   belongs_to :account
   belongs_to :real_user, :class_name => 'User'
-  
+  belongs_to :asset_user_access
+
   before_save :ensure_account
   before_save :cap_interaction_seconds
   belongs_to :context, :polymorphic => true
-  
+
   named_scope :of_account, lambda { |account|
     {
       :conditions => { :account_id => account.self_and_all_sub_accounts }
     }
   }
-  
+  named_scope :by_created_at, :order => 'created_at DESC'
+
   attr_accessor :generated_by_hand
   attr_accessor :is_update
 
   attr_accessible :url, :user, :controller, :action, :session_id, :developer_key, :user_agent, :real_user
-  
+
   def ensure_account
     self.account_id ||= (self.context_type == 'Account' ? self.context_id : self.context.account_id) rescue nil
     self.account_id ||= (self.context.is_a?(Account) ? self.context : self.context.account) if self.context
   end
-  
+
   def interaction_seconds_readable
     seconds = (self.interaction_seconds || 0).to_i
     if seconds <= 10
@@ -54,52 +56,28 @@ class PageView < ActiveRecord::Base
       readable_duration(seconds)
     end
   end
-  
+
   def cap_interaction_seconds
     self.interaction_seconds = [self.interaction_seconds || 5, 10.minutes.to_i].min
   end
-  
+
   def user_name
     self.user.name rescue t(:default_user_name, "Unknown User")
   end
-  
+
   def context_name
     self.context.name rescue ""
   end
-  
-  named_scope :recent_with_user, lambda {
-    {:order => 'page_views.id DESC', :limit => 100, :include => :user}
-  }
-  named_scope :to_be_summarized, lambda {
-    {:conditions => 'page_views.summarized IS NULL', :order => 'page_views.created_at', :limit => 1 }
-  }
-  named_scope :summarize_range, lambda {|context, start_at, end_at|
-    {:conditions => ['page_views.context_id = ? AND page_views.context_type = ? AND page_views.created_at > ? AND page_views.created_at < ?', context.id, context.class.to_s, start_at.utc, end_at.utc] }
-  }
+
   named_scope :after, lambda{ |date|
     {:conditions => ['page_views.created_at > ?', date] }
   }
   named_scope :for_user, lambda {|user_ids|
     {:conditions => {:user_id => user_ids} }
   }
-  named_scope :limit, lambda {|limit| 
+  named_scope :limit, lambda {|limit|
     {:limit => limit }
   }
-  
-  def generate_summaries
-    self.summarized = true
-    self.save
-    hour_start = ActiveSupport::TimeWithZone.new(Time.utc(self.created_at.year, self.created_at.month, self.created_at.day, self.created_at.hour), Time.zone).utc
-    hour_end = hour_start + (60*60)
-    range = PageViewRange.find_by_context_id_and_context_type_and_start_at_and_end_at(self.context_id, self.context_type, hour_start, hour_end)
-    range ||= PageViewRange.create(:context => self.context, :start_at => hour_start, :end_at => hour_end)
-    range.re_summarize
-    day_start = Time.utc(self.created_at.year, self.created_at.month, self.created_at.day)
-    day_end = day_start + 1.day
-    range = PageViewRange.find_by_context_id_and_context_type_and_start_at_and_end_at(self.context_id, self.context_type, day_start, day_end)
-    range ||= PageViewRange.create(:context => self.context, :start_at => day_start, :end_at => day_end)
-    range.re_summarize
-  end
 
   def self.page_views_enabled?
     !!page_view_method
@@ -113,20 +91,26 @@ class PageView < ActiveRecord::Base
   end
 
   def store
-    case PageView.page_view_method
+    result = case PageView.page_view_method
     when :log
       Rails.logger.info "PAGE VIEW: #{self.attributes.to_json}"
     when :cache
-      begin
-        json = self.attributes.as_json
-        json['is_update'] = true if self.is_update
-        Canvas.redis.rpush(PageView.cache_queue_name, json.to_json)
-      rescue Exception
-        # we're going to ignore the error for now, if redis is unavailable
+      json = self.attributes.as_json
+      json['is_update'] = true if self.is_update
+      if Canvas.redis.rpush(PageView.cache_queue_name, json.to_json)
+        true
+      else
+        # redis failed, push right to the db
+        self.save
       end
     when :db
       self.save
     end
+
+    self.created_at ||= Time.zone.now
+    self.store_page_view_to_user_counts
+
+    result
   end
 
   def do_update(params = {})
@@ -152,35 +136,70 @@ class PageView < ActiveRecord::Base
   def self.process_cache_queue
     redis = Canvas.redis
     lock_key = 'page_view_queue_processing'
-    # lock other processors out until we're done. if more than an hour
+    lock_key += ":#{Shard.current.id}" unless Shard.current.default?
+    lock_time = Setting.get("page_view_queue_lock_time", 15.minutes.to_s).to_i
+
+    # lock other processors out until we're done. if more than lock_time
     # passes, the lock will be dropped and we'll assume this processor died.
-    #
-    # we're really being pessimistic here, there shouldn't ever be more than
-    # one periodic job worker running anyway.
     unless redis.setnx lock_key, 1
       return
     end
-    redis.expire lock_key, 1.hour
+    redis.expire lock_key, lock_time
 
     begin
       # process as many items as were in the queue when we started.
-      qlen = redis.llen(self.cache_queue_name)
-      qlen.times do
-        json = redis.lpop(self.cache_queue_name)
-        break unless json
-        attrs = JSON.parse(json)
-        if attrs['is_update']
-          page_view = self.find_by_request_id(attrs['request_id'])
-          next unless page_view
-          page_view.do_update(attrs)
-          page_view.save
-        else
-          # bypass mass assignment protection
-          self.create { |p| p.send(:attributes=, attrs, false) }
+      todo = redis.llen(self.cache_queue_name)
+      while todo > 0
+        batch_size = [Setting.get_cached('page_view_queue_batch_size', '1000').to_i, todo].min
+        redis.expire lock_key, lock_time
+        transaction do
+          process_cache_queue_batch(batch_size, redis)
         end
+        todo -= batch_size
       end
     ensure
       redis.del lock_key
     end
+  end
+
+  def self.process_cache_queue_batch(batch_size, redis = Canvas.redis)
+    batch_size.times do
+      json = redis.lpop(self.cache_queue_name)
+      break unless json
+      attrs = JSON.parse(json)
+      self.process_cache_queue_item(attrs)
+    end
+  end
+
+  def self.process_cache_queue_item(attrs)
+    return if attrs['is_update'] && Setting.get_cached('skip_pageview_updates', nil) == "true"
+    self.transaction(:requires_new => true) do
+      if attrs['is_update']
+        page_view = self.find_by_request_id(attrs['request_id'])
+        return unless page_view
+        page_view.do_update(attrs)
+        page_view.save
+      else
+        # bypass mass assignment protection
+        self.create { |p| p.send(:attributes=, attrs, false) }
+      end
+    end
+  rescue ActiveRecord::StatementInvalid => e
+  end
+
+  def self.user_count_bucket_for_time(time)
+    utc = time.in_time_zone('UTC')
+    # round down to the last 5 minute mark -- so 03:43:28 turns into 03:40:00
+    utc = utc - ((utc.min % 5) * 60) - utc.sec
+    "active_users:#{utc.as_json}"
+  end
+
+  def store_page_view_to_user_counts
+    return unless Setting.get_cached('page_views_store_active_user_counts', 'false') == 'redis' && Canvas.redis_enabled?
+    return unless self.created_at.present? && self.user.present?
+    exptime = Setting.get_cached('page_views_active_user_exptime', 1.day.to_s).to_i
+    bucket = PageView.user_count_bucket_for_time(self.created_at)
+    Canvas.redis.sadd(bucket, self.user.global_id)
+    Canvas.redis.expire(bucket, exptime)
   end
 end

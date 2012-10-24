@@ -89,7 +89,7 @@ describe "External Tools" do
     end
     
     it "should render user navigation tools with a full return url" do
-      tool = @course.root_account.context_external_tools.build(:shared_secret => 'test_secret', :consumer_key => 'test_key', :name => 'my grade passback test tool', :domain => 'example.com')
+      tool = @course.root_account.context_external_tools.build(:shared_secret => 'test_secret', :consumer_key => 'test_key', :name => 'my grade passback test tool', :domain => 'example.com', :privacy_level => 'public')
       tool.settings[:user_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       
@@ -101,5 +101,6 @@ describe "External Tools" do
       doc.at_css('#tool_form').should_not be_nil
       doc.at_css("input[name='launch_presentation_return_url']")['value'].should match(/^http/)
     end
+    
   end
 end

@@ -27,7 +27,7 @@ describe TokensController do
     end
     
     it "should allow creating an access token" do
-      user
+      user(:active_user => true)
       user_session(@user)
       post 'create', :access_token => {:purpose => "test", :expires_at => "jun 1 2011"}
       response.should be_success
@@ -36,9 +36,19 @@ describe TokensController do
       assigns[:token].purpose.should == "test"
       assigns[:token].expires_at.to_date.should == Time.parse("jun 1 2011").to_date
     end
-    
+
+    it "should not allow creating an access token while masquerading" do
+      user(:active_user => true)
+      user_session(@user)
+      Account.site_admin.add_user(@user)
+      session[:become_user_id] = user_with_pseudonym.id
+
+      post 'create', :access_token => {:purpose => "test", :expires_at => "jun 1 2011"}
+      response.status.should == '401 Unauthorized'
+    end
+
     it "should not allow explicitly setting the token value" do
-      user
+      user(:active_user => true)
       user_session(@user)
       post 'create', :access_token => {:purpose => "test", :expires_at => "jun 1 2011", :token => "mytoken"}
       response.should be_success
@@ -57,7 +67,7 @@ describe TokensController do
     end
     
     it "should allow deleting an access token" do
-      user
+      user(:active_user => true)
       user_session(@user)
       token = @user.access_tokens.create!
       token.user_id.should == @user.id
@@ -65,10 +75,22 @@ describe TokensController do
       response.should be_success
       assigns[:token].should be_frozen
     end
-    
+
+    it "should not allow deleting an access token while masquerading" do
+      user(:active_user => true)
+      user_session(@user)
+      token = @user.access_tokens.create!
+      token.user_id.should == @user.id
+      Account.site_admin.add_user(@user)
+      session[:become_user_id] = user_with_pseudonym.id
+
+      delete 'destroy', :id => token.id
+      response.status.should == '401 Unauthorized'
+    end
+
     it "should not allow deleting someone else's access token" do
       rescue_action_in_public!
-      user
+      user(:active_user => true)
       user_session(@user)
       user2 = User.create!
       token = user2.access_tokens.create!
@@ -83,7 +105,7 @@ describe TokensController do
     end
     
     it "should allow retrieving an access token, but not give the full token string" do
-      user
+      user(:active_user => true)
       user_session(@user)
       token = @user.access_tokens.new
       token.developer_key = DeveloperKey.default
@@ -98,7 +120,7 @@ describe TokensController do
     end
     
     it "should not include token for protected tokens" do
-      user
+      user(:active_user => true)
       user_session(@user)
       token = @user.access_tokens.create!
       token.user_id.should == @user.id
@@ -111,7 +133,7 @@ describe TokensController do
     
     it "should not allow retrieving someone else's access token" do
       rescue_action_in_public!
-      user
+      user(:active_user => true)
       user_session(@user)
       user2 = User.create!
       token = user2.access_tokens.create!
@@ -121,7 +143,7 @@ describe TokensController do
     end
     
     it "should allow updating a token" do
-      user
+      user(:active_user => true)
       user_session(@user)
       token = @user.access_tokens.new
       token.developer_key = DeveloperKey.default
@@ -134,9 +156,9 @@ describe TokensController do
       assigns[:token].purpose.should == "new purpose"
       response.body.should_not match(/#{assigns[:token].token}/)
     end
-    
+
     it "should allow regenerating an unprotected token" do
-      user
+      user(:active_user => true)
       user_session(@user)
       token = @user.access_tokens.new
       token.developer_key = DeveloperKey.default
@@ -149,9 +171,23 @@ describe TokensController do
       assigns[:token].token.should_not == token.token
       response.body.should match(/#{assigns[:token].token}/)
     end
-    
+
+    it "should not allow regenerating a token while masquerading" do
+      user(:active_user => true)
+      user_session(@user)
+      token = @user.access_tokens.new
+      token.developer_key = DeveloperKey.default
+      token.save!
+      token.user_id.should == @user.id
+      token.protected_token?.should == false
+      Account.site_admin.add_user(@user)
+      session[:become_user_id] = user_with_pseudonym.id
+      put 'update', :id => token.id, :access_token => {:regenerate => '1'}
+      response.status.should == '401 Unauthorized'
+    end
+
     it "should not allow regenerating a protected token" do
-      user
+      user(:active_user => true)
       user_session(@user)
       token = @user.access_tokens.new
       token.save!
@@ -166,7 +202,7 @@ describe TokensController do
     
     it "should not allow updating someone else's token" do
       rescue_action_in_public!
-      user
+      user(:active_user => true)
       user_session(@user)
       user2 = User.create!
       token = user2.access_tokens.create!
